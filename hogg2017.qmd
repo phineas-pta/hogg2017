@@ -1,0 +1,592 @@
+---
+title: "solutions to the exercises in “Data analysis recipes: Using Markov Chain Monte Carlo”"
+subtitle: "Julia implementation of solutions to the exercises in David Hogg’s 2017 tutorial paper on McMC"
+author:
+  - name: "PTA"
+    affiliations: "Distinguished Scholar of Treasure Hoarder Socio-Economics, Northland Bank archives, Snezhnaya"
+license: "CC BY"
+engine: julia
+execute:
+  cache: true # prevent re-running all code chunks when rendering multiple formats
+julia:
+  exeflags: ["--threads=auto", "--color=no", "--project=."]
+format:
+  pdf:
+    mathspec: true # prevent weird error with github actions: extended mathchar used as mathchar
+    colorlinks: true
+    highlight-style: dracula
+    documentclass: scrreprt
+    papersize: a4
+    geometry: ["margin=1cm", "footskip=5mm"]
+    include-in-header:
+      text: |
+        \usepackage{fvextra} % to break long line in code block
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+    include-before-body:
+      text: |
+        \RecustomVerbatimEnvironment{verbatim}{Verbatim}{showspaces=false,showtabs=false,breaksymbolleft={},breaklines}
+    monofont: "JuliaMono-Regular" #  must be installed at system level, e.g. C:\Windows\Fonts or /usr/local/share/fonts/
+    fig-align: center
+  html:
+    page-layout: full
+    toc-location: left-body
+    theme:
+      light: united
+      dark: superhero
+    respect-user-color-scheme: true
+    highlight-style: gruvbox
+    title-block-banner: true
+    anchor-sections: false
+    smooth-scroll: true
+    include-in-header:
+      text: |
+        <style>
+        @font-face {font-family: JuliaMono; src: url("https://cdn.jsdelivr.net/gh/cormullion/juliamono-webfonts/JuliaMono-Regular.woff2");}
+        pre, code {font-family: JuliaMono, monospace;}
+        li > a {overflow-wrap: anywhere;} /* for mobile view */
+        mjx-container[display="true"] {overflow-x: auto;} /* for mobile view */
+        </style>
+    output-file: index.html # to be used in github actions (deploy as github pages)
+toc: true
+number-sections: true
+code-line-numbers: true
+callout-appearance: minimal
+editor: source
+---
+
+<!--
+to show plot in pdf, need rsvg-convert
+- in linux: install librsvg or the like
+- in windows to show plot: download rsvg-convert.exe into <quarto path>\bin\tools
+	- https://github.com/miyako/console-rsvg-convert/releases or
+	- https://sourceforge.net/projects/tumagcc/files/rsvg-convert-2.40.20.7z/download
+-->
+
+# preliminary {.unnumbered}
+
+source code of this document: <https://github.com/phineas-pta/hogg2017/blob/main/hogg2017.qmd>
+
+this document’s computations were carried out with `julia` `{julia} VERSION`, and its rendering was achieved via `quarto` {{< version >}}
+
+## references & resources {.unnumbered}
+
+reference: **David W. Hogg**, **Daniel Foreman-Mackey**. 2017. *Data analysis recipes: using Markov chain Monte Carlo*
+
+- paper: <https://arxiv.org/pdf/1710.06068>
+- source code: <https://github.com/davidwhogg/mcmc/blob/master/mcmc.tex>
+
+you will also find here other papers from the *Data analysis recipes* series by David W. Hogg
+
+- <https://arxiv.org/pdf/2005.14199>
+- <https://arxiv.org/pdf/1008.4686>
+- <https://arxiv.org/pdf/1205.4446>
+- <https://arxiv.org/pdf/0807.4820>
+
+additional resources: the following are various python implementations i’ve come across, but it’s worth noting that they often do not include solutions for every exercise
+
+- <https://github.com/vipasu/MCMC>
+- <https://github.com/granepura/Data4physics_NYU-Fall2022/blob/main/ProblemSet3_GehanRanepura/PS3-3(q2%2C4%2C10)/PS3-3_(q2%2C4%2C10).ipynb>
+- <https://github.com/vacquaviva/Flatiron_MCMC/blob/master/Flatiron_MCMC.ipynb>
+
+## prepare Julia environment {.unnumbered}
+
+```{julia}
+#| eval: false
+import Pkg
+Pkg.add(["StatsPlots"])
+```
+
+```{julia}
+using LinearAlgebra: dot, det
+using StatsPlots
+
+const N_samples = 100000;
+const N_bins = max(isqrt(N_samples), N_samples ÷ 200); # in histogram
+```
+
+# When do you need MCMC?
+
+*no exercise in this section*
+
+quick summary: MCMC is a method for approximating integrals in probabilistic inference, especially useful in high-dimensional spaces. It generates samples from a target distribution (*e.g.*, a posterior probability density function) without needing to compute intractable normalizing constants. The key advantage is its ability to marginalize over nuisance parameters by simply projecting samples onto the parameters of interest.
+
+**MCMC is a sampler**. If you are trying to find the optimum of the likelihood or the posterior pdf, you should use an *optimizer*, not a sampler. If you want to make sure you search all of parameter space, you should use a *search algorithm*, not a sampler. MCMC is good at one thing, and one thing only: **Sampling ill-normalized (or otherwise hard to sample) pdf**.
+
+# What is a sampling?
+
+## quick summary {.unnumbered}
+
+MCMC samples are primarily used for computing integrals, such as reconstructing probability density via histograms or calculating means, medians, and quantiles. This section emphasizes avoiding reporting the mode and instead recommends credible intervals derived from quantiles. Marginalization of parameters is straightforward by discarding nuisance parameters from the samples.
+
+## exercise 01
+
+::: {.callout-note}
+
+Look up (or choose) definitions for the mean, variance, skewness, and kurtosis of a distribution. Also look up or compute the analytic values of these 4 statistics for a top-hat (uniform) distribution. Write a computer program that uses some standard package (such as `numpy`) to generate $K$ random numbers $x$ from a uniform distribution in the interval $0<x<1$.
+
+Now use those $K$ numbers to compute a sampling estimate of the mean, variance, skewness, and kurtosis (4 estimates; look up definitions as needed). Make 4 plot of these 4 estimates as a function of $1/K$ or perhaps $\log_2 K$, for $K=4^n$ for $n=1$ up to $n=10$ (that is, $K=4$, $K=16$, and so on up to $K=1048576$). Over-plot the analytic answers.
+
+What can you conclude?
+
+:::
+
+Mean: assuming the arithmetic mean, simply the sum of a set of values divided by the number of values. Also known as the expected value of a distribution.
+$$
+\mathrm{Mean}(x) = \mu = \mathbb{E}[x] = \int_0^1 x dx = \frac{1}{2}
+$$
+
+Variance: expectation of the squared deviation of a random variable from its mean. Can also be calculated by taking the second moment and subtracting the square of the 1st moment.
+$$
+\mathrm{Var}(x) = \sigma^2 = \mathbb{E}[(x-\mu)^2] = \int_0^1 \left(x - \frac{1}{2}\right)^2 dx = \frac{1}{12}
+$$
+
+Skewness: measures the asymmetry of a distribution about its mean. Positive skew means that there is larger tail to the right.
+$$
+\mathrm{Skew}(x) = \gamma = \mathbb{E}\left[\left( \frac{x-\mu}{\sigma} \right)^3\right] =\int_0^1 \left(\frac{x-\frac{1}{2}}{\frac{1}{\sqrt{12}}}\right)^3 dx = 0
+$$
+
+Kurtosis: corresponds to a scaled version of the fourth moment of a distribution. A high kurtosis value means more mass lies in the tails.
+$$
+\mathrm{Kurt}(x) = \kappa = \mathbb{E}\left[\left( \frac{x-\mu}{\sigma} \right)^4\right] =\int_0^1 \left(\frac{x-\frac{1}{2}}{\frac{1}{\sqrt{12}}}\right)^4 dx = \frac{9}{5}
+$$
+
+```{julia}
+N = 10;
+K = zeros(Int, N);
+mean_K = zeros(N);
+var_K = zeros(N);
+skew_K = zeros(N);
+kurt_K = zeros(N);
+for i ∈ 1:N
+	k = 4^i
+	x = rand(k)
+	mean_x = sum(x) / k
+	x_centered = x .- mean_x
+	var_x = sum(x_centered.^2) / k
+	x_standardized = x_centered ./ sqrt(var_x)
+	skew_x = sum(x_standardized.^3) / k
+	kurt_x = sum(x_standardized.^4) / k
+
+	K[i] = k
+	mean_K[i] = mean_x
+	var_K[i] = var_x
+	skew_K[i] = skew_x
+	kurt_K[i] = kurt_x
+end
+```
+
+```{julia}
+scatter(K, mean_K, xaxis=:log, label=nothing, title="mean")
+hline!([1/2], label="analytical solution = 1/2")
+```
+
+```{julia}
+scatter(K, var_K, xaxis=:log, label=nothing, title="variance")
+hline!([1/12], label="analytical solution = 1/12")
+```
+
+```{julia}
+scatter(K, skew_K, xaxis=:log, label=nothing, title="skewness")
+hline!([0], label="analytical solution = 0")
+```
+
+```{julia}
+scatter(K, kurt_K, xaxis=:log, label=nothing, title="kurtosis")
+hline!([9/5], label="analytical solution = 9/5")
+```
+
+# Metropolis–Hastings MCMC
+
+## quick summary {.unnumbered}
+
+The Metropolis-Hastings (M-H) algorithm is a foundational MCMC method. It requires a target function and a proposal distribution. The algorithm proposes a new sample and accepts/rejects it based on the ratio of target function values. Convergence relies on detailed balance and a stationary distribution proportional to the target. The proposal distribution must be symmetric or corrected for asymmetry.
+
+## exercise 02
+
+::: {.callout-note}
+
+In your scientific programming language of choice, write a very simple M-H MCMC sampler. Sample in a single parameter $x$ and give the sampler as its density function $p(x)$ a Gaussian density with mean 2 and variance 2. (Note that variance is the *square* of the standard deviation.) Give the sampler a proposal distribution $q(x^{\prime}| x)$ a Gaussian pdf for $x^{\prime}$ with mean $x$ and variance 1. Initialize the sampler with $x=0$ and run the sampler for more than $10^4$ steps. Plot the results as a histogram, with the true density over-plotted sensibly.
+
+:::
+
+proposal distribution: Gaussian pdf for $x^{\prime}$ with mean $x$ and variance 1:
+```{julia}
+rngₑₓ₀₂(𝕩) = 𝕩 + randn();
+```
+
+probability density function of a normally distributed random variable with expected value $\mu$ and variance $\sigma^2$:
+$$
+f(x) = \frac{1}{\sqrt{2\pi}\sigma}\exp{\left(-\frac{1}{2}\left(\frac{x-\mu}{\sigma}\right)^2\right)}
+$$
+
+```{julia}
+pdfₑₓ₀₂(𝕩) = exp(- ((𝕩-2))^2 / (2*2)) / sqrt(2π*2); # Gaussian density with mean 2 and variance 2
+
+samplesₑₓ₀₂ = zeros(N_samples);
+xᵢ = 0.; # start
+for i ∈ 1:N_samples
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	if pdfₑₓ₀₂(xᵢ´) / pdfₑₓ₀₂(xᵢ) > rand()
+		xᵢ = xᵢ´
+	end
+	samplesₑₓ₀₂[i] = xᵢ
+end
+
+histogram(samplesₑₓ₀₂, normed=true, bins=N_bins, label="drawn samples", fill=false)
+plot!(pdfₑₓ₀₂, label="Gaussian PDF")
+```
+
+## exercise 03
+
+::: {.callout-note}
+
+Re-do exercise 02 but now with an input density that is uniform on $3<x<7$ and zero everywhere else. What change did you have to make to the initialization, and why?
+
+:::
+
+probability density function of continuous uniform distribution on interval $[a, b] \subset \mathbb{R}$:
+$$
+f(x) = \begin{cases}
+\frac{1}{b-a} & \text{for } a \le x \le b, \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+```{julia}
+pdfₑₓ₀₃(𝕩) = 3≤𝕩≤7 ? .25 : 0.; # 1/(7-3) = 0.25
+
+samplesₑₓ₀₃ = zeros(N_samples);
+xᵢ = 5.; # start
+for i ∈ 1:N_samples
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	if pdfₑₓ₀₃(xᵢ´) / pdfₑₓ₀₃(xᵢ) > rand()
+		xᵢ = xᵢ´
+	end
+	samplesₑₓ₀₃[i] = xᵢ
+end
+
+histogram(samplesₑₓ₀₃, normed=true, bins=N_bins, label="drawn samples", fill=false)
+plot!(pdfₑₓ₀₃, label="uniform PDF")
+```
+
+if not change init value, no new proposals would be accepted, and the walker would not have moved anywhere
+
+## exercise 04
+
+::: {.callout-note}
+
+Re-do exercise 02 but now with an input density that is a function of 2 variables $(x, y)$. For the density function use 2 different functions.
+
+a. The first density function is a covariant 2-dimensional Gaussian density with variance tensor $\begin{bmatrix} 2.0 & 1.2 \\ 1.2 & 2.0 \end{bmatrix}$
+
+b. The second density function is a rectangular top-hat function that is uniform on the joint constraint $3<x<7$ and $1<y<9$ and zero everywhere else.
+
+For the proposal distribution $q(x^{\prime}, y^{\prime}\,|\, x, y)$ a 2-dimensional Gaussian density with mean at $[x, y]$ and variance tensor set to the 2-dimensional identity matrix.
+
+Plot the 2 one-dimensional histograms and also a 2-dimensional scatter plot for each sampling. Make a similar plot for the top-hat.
+
+:::
+
+proposal distribution for $(x^{\prime}, y^{\prime})$: 2D Gaussian density with mean at $[x, y]$ and variance tensor set to the 2D identity matrix:
+```{julia}
+rngₑₓ₀₄(𝕩, 𝕪) = xᵢ + randn(), yᵢ + randn();
+```
+
+### sub-exr a. {.unnumbered}
+
+probability density function of multivariate normal distribution with k-dimensional mean vector $\mu$ and $k \times k$ covariance matrix $\Sigma$ (positive definite)
+$$
+f(x) = \frac{1}{\sqrt{(2\pi)^k \det\Sigma}}\exp\left(-\frac{1}{2} (x - \mu)^\top \Sigma^{-1} (x-\mu)\right)
+$$
+
+```{julia}
+# save covariance matrix to be re-used many times
+Σₑₓ₀₄a = [2. 1.2; 1.2 2.];
+invΣₑₓ₀₄a = inv(Σₑₓ₀₄a);
+sqrtdetΣₑₓ₀₄a = sqrt(det(Σₑₓ₀₄a));
+pdfₑₓ₀₄a(𝕩, 𝕪) = exp(- dot([𝕩, 𝕪], invΣₑₓ₀₄a, [𝕩, 𝕪]) / 2) / (2π * sqrtdetΣₑₓ₀₄a);
+
+samplesₑₓ₀₄a = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+for i ∈ 1:N_samples
+	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
+	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+	end
+	samplesₑₓ₀₄a[i, :] .= [xᵢ, yᵢ]
+end
+```
+
+```{julia}
+histogram2d(samplesₑₓ₀₄a[:, 1], samplesₑₓ₀₄a[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+```
+
+```{julia}
+p = plot(layout=2)
+histogram!(p, samplesₑₓ₀₄a[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(p, samplesₑₓ₀₄a[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+```
+
+### sub-exr b. {.unnumbered}
+
+probability density function of multivariate uniform distribution on $\Omega \subset \mathbb{R}^n$ a bounded region with volume (area) $v(\Omega)$
+$$
+f(x) = \begin{cases}
+\frac{1}{v(\Omega)} & \text{for } x \in \Omega, \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+```{julia}
+pdfₑₓ₀₄b(𝕩, 𝕪) = 3≤𝕩≤7 && 1≤𝕪≤9 ? .03125 : 0.; # 1/(7-3)/(9-1) = 0.03125
+
+samplesₑₓ₀₄b = zeros(N_samples, 2);
+xᵢ, yᵢ = 5., 5.; # start
+for i ∈ 1:N_samples
+	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
+	if pdfₑₓ₀₄b(xᵢ´, yᵢ´) / pdfₑₓ₀₄b(xᵢ, yᵢ) > rand()
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+	end
+	samplesₑₓ₀₄b[i, :] .= [xᵢ, yᵢ]
+end
+```
+
+```{julia}
+histogram2d(samplesₑₓ₀₄b[:, 1], samplesₑₓ₀₄b[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+```
+
+```{julia}
+p = plot(layout=2)
+histogram!(p, samplesₑₓ₀₄b[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(p, samplesₑₓ₀₄b[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+```
+
+## exercise 05
+
+::: {.callout-note}
+
+Re-do exercise 04.a. but with different values for the variance of the proposal distribution $q(x^{\prime}| x)$. What happens when you go to very extreme values (like for instance $10^{-1}$ or $10^2$)?
+
+:::
+
+```{julia}
+```
+
+## exercise 06
+
+::: {.callout-note}
+
+Why, in all the previous problems, did we give the proposal distributions $q(x^{\prime}| x)$ a mean of $x$? What would be bad if we hadn’t done that?
+
+Re-do exercise 04.a. with a proposal $q(x^{\prime}| x)$ with a stupidly shifted mean of $x + 2$ and see what happens.
+
+Bonus points: Modify the acceptance-rejection criterion to deal with the messed-up $q(x^{\prime}| x)$ and show that everything works once again.
+
+:::
+
+```{julia}
+```
+
+# Likelihoods and priors
+
+## quick summary {.unnumbered}
+
+## exercise 07
+
+::: {.callout-note}
+
+Run your M-H MCMC sampler from exercise 02, but now with a density function that is precisely unity *everywhere* (that is, at any input value of $x$ it returns unity). That is, an improper function (as discussed in this section). Run it for longer and longer and plot the chain value $x$ as a function of timestep. What happens?
+
+:::
+
+```{julia}
+```
+
+## exercise 08
+
+::: {.callout-note}
+
+For a real-world inference problem, read enough of “Data analysis recipes: Fitting a model to data” to understand and execute exercise 06 in that document.
+
+:::
+
+```{julia}
+```
+
+## exercise 09
+
+::: {.callout-note}
+
+Modify the sampler you wrote in exercise 02 to take steps not in $x$ but in $\ln x$. That is, replace the Gaussian proposal distribution $q(x^{\prime}| x)$ with a Gaussian distribution in $\ln x$, *i.e.* $q(\ln x^{\prime}| \ln x)$, but make no other changes. By doing this, you are no longer sampling the Gaussian $p(x)$ that you were in exercise 02. What about your answers change?  What distribution are you sampling now? Compute the analytic function that you have sampled from - this will no longer be the same $p(x)$ - and over-plot it on your histogram.
+
+:::
+
+```{julia}
+```
+
+# Autocorrelation & convergence
+
+## quick summary {.unnumbered}
+
+MCMC produces correlated samples due to its Markovian nature. Key properties include:
+
+- Burn-in: Discarding initial samples to mitigate initialization bias.
+- Autocorrelation Time: Measures sample independence; longer times require more samples.
+- Convergence Diagnostics: Tools like the Gelman-Rubin statistic compare multiple chains to assess convergence.
+
+## exercise 10
+
+::: {.callout-note}
+
+Re-do exercise 02 but now look at convergence: Plot the $x$ chain as a function of timestep. Also split the chain into 4 contiguous segments (the 1st, 2nd, 3rd, and 4th quarters of the chain). In each of these four, compute the empirical mean and empirical variance of $x$. What do you conclude about convergence from these heuristics?
+
+:::
+
+```{julia}
+```
+
+## exercise 11
+
+::: {.callout-note}
+
+Write a piece of code that computes the empirical autocorrelation function. You will probably want to speed this computation up by using a fast Fourier transform (The calculation of the autocorrelation function can be seen as a convolution and it can, therefore, be computed using the fast Fourier transform in $\mathcal{O}(N\,\log N)$ operations instead of $\mathcal{O}(N^2)$ for a naive implementation.). Run this on the chain you obtained from exercise 02. Plot the autocorrelation function you find at short lags ($\Delta < 100$).
+
+:::
+
+```{julia}
+```
+
+## exercise 12
+
+::: {.callout-note}
+
+Write a piece of code that estimates the integrated autocorrelation time for a chain of samples using an estimate of the autocorrelation function and a given window size $M$. Plot the estimated $\tau$ as a function of $M$ for several contiguous segments of the chain and overplot the sample function based on the full chain. What can you conclude from this plot?
+
+Implement an iterative procedure for automatically choosing $M$. (The recipe given on page 16 of Sokal 1997 *Monte Carlo methods in statistical mechanics: foundations and new algorithms.* might be helpful. Note that the definition of $\tau$ that we adopt is twice the value used by Sokal.) Overplot this estimate on the plot of $\tau(M)$
+
+:::
+
+```{julia}
+```
+
+# Tuning
+
+## quick summary {.unnumbered}
+
+Effective MCMC requires tuning the proposal distribution (*e.g.*, Gaussian with adjustable covariance). Optimal acceptance rates (20–50%) balance exploration and efficiency. Adaptive methods adjust proposal scales during burn-in to achieve target acceptance rates.
+
+## exercise 13
+
+::: {.callout-note}
+
+Run the MCMC sampling of exercise 04 with the covariant Gaussian density. Give the proposal density $q(x^{\prime}| x)$ a diagonal variance tensor that is $Q$ times the 2-dimensional identity matrix. Assess the acceptance fraction as a function of $Q$. Find (very roughly) the value of $Q$ that gives an acceptance fraction of about 25%. Don’t try to optimize precisely; just evaluate the acceptance fraction on a logarithmic grid of $Q$ with values of $Q$ separated by factors of 2.
+
+:::
+
+```{julia}
+```
+
+## exercise 14
+
+::: {.callout-note}
+
+Re-do exercise 13 but instead of trying to reach a certain acceptance fraction, try to minimize the autocorrelation time. You will need one of the autocorrelation-time estimators you might have built in a previous exercise. (This, by the way, is the Right Thing To Do, but often expensive.) What do you get as the best value of $Q$ in this case? Again, just evaluate on a coarse logarithmic grid.
+
+:::
+
+```{julia}
+```
+
+## exercise 15
+
+::: {.callout-note}
+
+In exercise 13 you varied only the parameter $Q$, but really there are three free parameters (2 variances and a covariance). If the problem was $D$-dimensional, how many tuning parameters would there be, in principle?
+
+:::
+
+```{julia}
+```
+
+## exercise 16
+
+::: {.callout-note}
+
+The Rosenbrock density used as a demonstration case for many samplers (see, for example, Goodman & Weare 2010 *Ensemble samplers with affine invariance*). Test your sampler on this density: $f(\theta_1,\,\theta_2) = \exp\left(-\frac{100\,(\theta_2-{\theta_1}^2)^2+(1-\theta_1)^2}{20}\right)$. Tune the Gaussian proposal distribution in your MH MCMC sampler to sample this density efficiently. What autocorrelation time do you get? Compare to what `emcee` gets (<https://dfm.io/emcee>)
+
+:::
+
+```{julia}
+```
+
+# Initialization and burn-in
+
+## quick summary {.unnumbered}
+
+Initialize samplers near plausible regions (*e.g.*, from optimization). Burn-in removes early samples to ensure the chain has reached the stationary distribution. Multi-modal posteriors require multiple chains to avoid initialization-dependent results.
+
+## exercise 17
+
+::: {.callout-note}
+
+Re-do exercise 02 but with different starting positions. What happens as you make the starting position extremely far from the origin? What is the scaling: As you move the initialization further away, how much longer does it take for the sampler to reach reasonable density?
+
+:::
+
+```{julia}
+```
+
+## exercise 18
+
+::: {.callout-note}
+
+Check the scaling you found in exercise 17 with a higher-dimensional Gaussian (try, for example, a 10-d Gaussian). The same or worse?
+
+:::
+
+```{julia}
+```
+
+## exercise 19
+
+::: {.callout-note}
+
+Import (or write) an optimizer, and upgrade the code you wrote for exercise 17 to begin by optimizing $\ln p(x)$ and only then start the MCMC sampler from that optimum. Use a sensible optimizer. Compare the scaling you found in exercise 17 to the same scaling for the optimizer. To make this test fair, don’t use the awesome math you know about Gaussians to help you here; pretend that $p(x)$ is an unknown function with unknown derivatives.
+
+:::
+
+```{julia}
+```
+
+# Results, error bars, and figures
+
+*no exercise in this section*
+
+quick summary: Recommendations for reporting:
+
+- Plots: Trace plots (to assess mixing), histograms, and corner plots (showing covariances).
+- Statistics: Use medians and quantiles for credible intervals instead of the best sample.
+- Sample Sharing: Publish posterior samples with prior evaluations for reproducibility.
+
+# Troubleshooting and advice
+
+*no exercise in this section*
+
+quick summary: Common issues and solutions:
+
+- Functional Tests: Validate MCMC by sampling known distributions (*e.g.*, Gaussians) or priors.
+- Likelihood Issues: Ensure reproducibility of likelihood evaluations (*e.g.*, deterministic integrals).
+- Parameterization: Avoid multimodalities from poor parameter choices (*e.g.*, reparameterize angles to Cartesian coordinates).
+- Convergence Checks: Monitor acceptance rates, autocorrelation, and initialization dependencies.
+
+# More sophisticated sampling methods
+
+*no exercise in this section*
+
+quick summary:
+
+- Ensemble Samplers (*e.g.*, `emcee`): Use multiple walkers to adaptively tune proposals, ideal for low-dimensional problems.
+- Gibbs Sampling: Efficient for models with conditionally independent parameters (*e.g.*, hierarchical models).
+- Hamiltonian Monte Carlo (HMC): Uses gradient information for high-dimensional efficiency.
+- Nested Sampling: Explores multimodal distributions and computes Bayesian evidence.
+- Importance Sampling: Re-weights samples from a simpler distribution to approximate the target.
