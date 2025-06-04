@@ -97,9 +97,13 @@ Pkg.add(["StatsPlots"])
 ```
 
 ```{julia}
+using Statistics: mean, var
 using LinearAlgebra: dot, det
 using StatsPlots
+```
 
+options to run MCMC chains
+```{julia}
 const N_samples = 100000;
 const N_bins = max(isqrt(N_samples), N_samples ÷ 200); # in histogram
 ```
@@ -224,7 +228,7 @@ pdfₑₓ₀₂(𝕩) = exp(- ((𝕩-2))^2 / (2*2)) / sqrt(2π*2); # Gaussian de
 
 samplesₑₓ₀₂ = zeros(N_samples);
 xᵢ = 0.; # start
-for i ∈ 1:N_samples
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´ = rngₑₓ₀₂(xᵢ)
 	if pdfₑₓ₀₂(xᵢ´) / pdfₑₓ₀₂(xᵢ) > rand()
 		xᵢ = xᵢ´
@@ -257,7 +261,7 @@ pdfₑₓ₀₃(𝕩) = 3≤𝕩≤7 ? .25 : 0.; # 1/(7-3) = 0.25
 
 samplesₑₓ₀₃ = zeros(N_samples);
 xᵢ = 5.; # start
-for i ∈ 1:N_samples
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´ = rngₑₓ₀₂(xᵢ)
 	if pdfₑₓ₀₃(xᵢ´) / pdfₑₓ₀₃(xᵢ) > rand()
 		xᵢ = xᵢ´
@@ -292,9 +296,9 @@ proposal distribution for $(x^{\prime}, y^{\prime})$: 2D Gaussian density with m
 rngₑₓ₀₄(𝕩, 𝕪) = xᵢ + randn(), yᵢ + randn();
 ```
 
-### sub-exr a. {.unnumbered}
+### sub-exr 4.a. {.unnumbered}
 
-probability density function of multivariate normal distribution with k-dimensional mean vector $\mu$ and $k \times k$ covariance matrix $\Sigma$ (positive definite)
+probability density function of multivariate normal distribution with $k$-dimensional mean vector $\mu$ and $k \times k$ covariance matrix $\Sigma$ (must also be positive definite)
 $$
 f(x) = \frac{1}{\sqrt{(2\pi)^k \det\Sigma}}\exp\left(-\frac{1}{2} (x - \mu)^\top \Sigma^{-1} (x-\mu)\right)
 $$
@@ -308,7 +312,7 @@ pdfₑₓ₀₄a(𝕩, 𝕪) = exp(- dot([𝕩, 𝕪], invΣₑₓ₀₄a, [𝕩
 
 samplesₑₓ₀₄a = zeros(N_samples, 2);
 xᵢ, yᵢ = 0., 0.; # start
-for i ∈ 1:N_samples
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
 	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
 		xᵢ, yᵢ = xᵢ´, yᵢ´
@@ -327,7 +331,7 @@ histogram!(p, samplesₑₓ₀₄a[:, 1], subplot=1, normed=true, bins=N_bins, l
 histogram!(p, samplesₑₓ₀₄a[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
 ```
 
-### sub-exr b. {.unnumbered}
+### sub-exr 4.b. {.unnumbered}
 
 probability density function of multivariate uniform distribution on $\Omega \subset \mathbb{R}^n$ a bounded region with volume (area) $v(\Omega)$
 $$
@@ -342,7 +346,7 @@ pdfₑₓ₀₄b(𝕩, 𝕪) = 3≤𝕩≤7 && 1≤𝕪≤9 ? .03125 : 0.; # 1/(
 
 samplesₑₓ₀₄b = zeros(N_samples, 2);
 xᵢ, yᵢ = 5., 5.; # start
-for i ∈ 1:N_samples
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
 	if pdfₑₓ₀₄b(xᵢ´, yᵢ´) / pdfₑₓ₀₄b(xᵢ, yᵢ) > rand()
 		xᵢ, yᵢ = xᵢ´, yᵢ´
@@ -370,7 +374,41 @@ Re-do exercise 04.a. but with different values for the variance of the proposal 
 :::
 
 ```{julia}
+rngₑₓ₀₅1(𝕩, 𝕪) = xᵢ + 1e-1*randn(), yᵢ + 1e-1*randn();
+
+samplesₑₓ₀₅1 = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₅1(xᵢ, yᵢ)
+	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+	end
+	samplesₑₓ₀₅1[i, :] .= [xᵢ, yᵢ]
+end
+
+histogram2d(samplesₑₓ₀₅1[:, 1], samplesₑₓ₀₅1[:, 2], bins=N_bins, normalize=:pdf, color=:plasma, title="variance = 0.1×I₂")
 ```
+
+```{julia}
+rngₑₓ₀₅2(𝕩, 𝕪) =  xᵢ + 1e2*randn(),  yᵢ + 1e2*randn();
+
+samplesₑₓ₀₅2 = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₅2(xᵢ, yᵢ)
+	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+	end
+	samplesₑₓ₀₅2[i, :] .= [xᵢ, yᵢ]
+end
+
+histogram2d(samplesₑₓ₀₅2[:, 1], samplesₑₓ₀₅2[:, 2], normalize=:pdf, color=:plasma, title="variance = 100×I₂")
+```
+
+extreme values of the proposal variance don’t find representative samples of the distribution
+
+- small variance = small step sizes: walkers don’t go very far at every step → high autocorrelation
+- large variance = large step sizes: leads to many rejected candidates, lowering the number of unique samples we get
 
 ## exercise 06
 
@@ -385,11 +423,30 @@ Bonus points: Modify the acceptance-rejection criterion to deal with the messed-
 :::
 
 ```{julia}
+rngₑₓ₀₆(𝕩, 𝕪) =  xᵢ+2 + randn(),  yᵢ + randn();
+
+samplesₑₓ₀₆ = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₆(xᵢ, yᵢ)
+	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+	end
+	samplesₑₓ₀₆[i, :] .= [xᵢ, yᵢ]
+end
+
+histogram2d(samplesₑₓ₀₆[:, 1], samplesₑₓ₀₆[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
 ```
+
+A proposal distribution with nonzero mean would bias walkers to move in one direction and not explore the space fairly
 
 # Likelihoods and priors
 
 ## quick summary {.unnumbered}
+
+MCMC samples a posterior (probability for parameters given data), and cannot sample a likelihood (probability for data given parameters)
+
+it is a good idea to have proper priors (*e.g.* flat but with bounds). It isn’t a requirement that priors be proper for the posterior to be proper
 
 ## exercise 07
 
@@ -399,8 +456,20 @@ Run your M-H MCMC sampler from exercise 02, but now with a density function that
 
 :::
 
+improper function: returns $1.0$ at any input value of $x$, *i.e.* always accept new sample regardless
+
 ```{julia}
+samplesₑₓ₀₇ = zeros(N_samples);
+xᵢ = 0.; # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ = rngₑₓ₀₂(xᵢ) # always accept new sample regardless
+	samplesₑₓ₀₇[i] = xᵢ
+end
+
+plot(samplesₑₓ₀₇)
 ```
+
+a true random walk, in other words Markov chain without Monte Carlo
 
 ## exercise 08
 
@@ -410,19 +479,44 @@ For a real-world inference problem, read enough of “Data analysis recipes: Fit
 
 :::
 
-```{julia}
-```
+i already wrote solution to that exercise using `Turing` package, see <https://github.com/phineas-pta/hogg2010>, but for this exercise i’m too lazy to write low-level code because the log-likehood isn’t trivial
 
 ## exercise 09
 
 ::: {.callout-note}
 
-Modify the sampler you wrote in exercise 02 to take steps not in $x$ but in $\ln x$. That is, replace the Gaussian proposal distribution $q(x^{\prime}| x)$ with a Gaussian distribution in $\ln x$, *i.e.* $q(\ln x^{\prime}| \ln x)$, but make no other changes. By doing this, you are no longer sampling the Gaussian $p(x)$ that you were in exercise 02. What about your answers change?  What distribution are you sampling now? Compute the analytic function that you have sampled from - this will no longer be the same $p(x)$ - and over-plot it on your histogram.
+Modify the sampler you wrote in exercise 02 to take steps not in $x$ but in $\ln x$. That is, replace the Gaussian proposal distribution $q(x^{\prime}| x)$ with a Gaussian distribution in $\ln x$, *i.e.* $q(\ln x^{\prime}| \ln x)$, but make no other changes. By doing this, you are no longer sampling the Gaussian $p(x)$ that you were in exercise 02. What about your answers change? What distribution are you sampling now? Compute the analytic function that you have sampled from - this will no longer be the same $p(x)$ - and over-plot it on your histogram.
 
 :::
 
 ```{julia}
+rngₑₓ₀₉(𝕩) = 𝕩*exp(randn()); # exp(log(𝕩) + randn())
+
+samplesₑₓ₀₉ = zeros(N_samples);
+xᵢ = 1e-3; # start at 0. will collapse everything
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	if xᵢ´ > 0 && pdfₑₓ₀₂(log(xᵢ´)) / pdfₑₓ₀₂(log(xᵢ)) > rand()
+		xᵢ = xᵢ´
+	end
+	samplesₑₓ₀₉[i] = xᵢ
+end
+
+# ATTENTION: μ & σ of log-normal aren’t the same as normal distribution
+log_samplesₑₓ₀₉ = log.(samplesₑₓ₀₉);
+μ̂ₑₓ₀₉ = mean(log_samplesₑₓ₀₉);
+σ̂²ₑₓ₀₉ = var(log_samplesₑₓ₀₉; corrected=false);
+
+#=
+# somehow below formula isn’t correct, that’s why i used the estimators above
+μₑₓ₀₉ = log(4/sqrt(4+2)); # log(μₓ^2/sqrt(μₓ^2 + σₓ^2))
+σ²ₑₓ₀₉ = log1p(2/2^2); # log1p((σₓ/μₓ)^2)
+=#
+
+histogram(samplesₑₓ₀₉, normed=true, bins=N_bins, label="drawn samples", fill=false)
+plot!(𝕩 -> exp(-(log(𝕩)-μ̂ₑₓ₀₉)^2/(2*σ̂²ₑₓ₀₉))/(𝕩*sqrt(2π*σ̂²ₑₓ₀₉)), label="log-normal PDF")
 ```
+
 
 # Autocorrelation & convergence
 
@@ -443,6 +537,25 @@ Re-do exercise 02 but now look at convergence: Plot the $x$ chain as a function 
 :::
 
 ```{julia}
+plot(samplesₑₓ₀₂, label=nothing)
+```
+
+```{julia}
+# copied from https://discourse.julialang.org/t/split-vector-into-n-potentially-unequal-length-subvectors/73548/4
+samplesₑₓ₀₂_4chunks = begin
+	c = N_samples ÷ 4
+	[samplesₑₓ₀₂[1+c*k:(k == 3 ? end : c*k+c)] for k = 0:3]
+end;
+
+plot(samplesₑₓ₀₂_4chunks, label=["1" "2" "3" "4"])
+```
+
+```{julia}
+mean.(samplesₑₓ₀₂_4chunks)
+```
+
+```{julia}
+var.(samplesₑₓ₀₂_4chunks)
 ```
 
 ## exercise 11
