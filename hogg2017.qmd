@@ -104,7 +104,7 @@ using StatsPlots
 
 options to run MCMC chains
 ```{julia}
-const N_samples = 100000;
+const N_samples = 10000;
 const N_bins = max(isqrt(N_samples), N_samples ÷ 200); # in histogram
 ```
 
@@ -155,47 +155,47 @@ $$
 $$
 
 ```{julia}
-N = 10;
-K = zeros(Int, N);
-mean_K = zeros(N);
-var_K = zeros(N);
-skew_K = zeros(N);
-kurt_K = zeros(N);
-for i ∈ 1:N
+Nₑₓ₀₁ = 10; # 4ⁿ for n from 1 to 10
+Kₑₓ₀₁ = zeros(Int, Nₑₓ₀₁);
+μK = zeros(Nₑₓ₀₁);
+σ²K = zeros(Nₑₓ₀₁);
+γK = zeros(Nₑₓ₀₁);
+κK = zeros(Nₑₓ₀₁);
+for i ∈ 1:Nₑₓ₀₁
 	k = 4^i
 	x = rand(k)
-	mean_x = sum(x) / k
-	x_centered = x .- mean_x
-	var_x = sum(x_centered.^2) / k
-	x_standardized = x_centered ./ sqrt(var_x)
-	skew_x = sum(x_standardized.^3) / k
-	kurt_x = sum(x_standardized.^4) / k
+	μₖ = sum(x) / k
+	x_centered = x .- μₖ
+	σ²ₖ = sum(x_centered.^2) / k
+	x_standardized = x_centered ./ sqrt(σ²ₖ)
+	γₖ = sum(x_standardized.^3) / k
+	κₖ = sum(x_standardized.^4) / k
 
-	K[i] = k
-	mean_K[i] = mean_x
-	var_K[i] = var_x
-	skew_K[i] = skew_x
-	kurt_K[i] = kurt_x
+	Kₑₓ₀₁[i] = k
+	μK[i] = μₖ
+	σ²K[i] = σ²ₖ
+	γK[i] = γₖ
+	κK[i] = κₖ
 end
 ```
 
 ```{julia}
-scatter(K, mean_K, xaxis=:log, label=nothing, title="mean")
+scatter(Kₑₓ₀₁, μK, xaxis=:log, label=nothing, title="mean")
 hline!([1/2], label="analytical solution = 1/2")
 ```
 
 ```{julia}
-scatter(K, var_K, xaxis=:log, label=nothing, title="variance")
+scatter(Kₑₓ₀₁, σ²K, xaxis=:log, label=nothing, title="variance")
 hline!([1/12], label="analytical solution = 1/12")
 ```
 
 ```{julia}
-scatter(K, skew_K, xaxis=:log, label=nothing, title="skewness")
+scatter(Kₑₓ₀₁, γK, xaxis=:log, label=nothing, title="skewness")
 hline!([0], label="analytical solution = 0")
 ```
 
 ```{julia}
-scatter(K, kurt_K, xaxis=:log, label=nothing, title="kurtosis")
+scatter(Kₑₓ₀₁, κK, xaxis=:log, label=nothing, title="kurtosis")
 hline!([9/5], label="analytical solution = 9/5")
 ```
 
@@ -224,20 +224,23 @@ f(x) = \frac{1}{\sqrt{2\pi}\sigma}\exp{\left(-\frac{1}{2}\left(\frac{x-\mu}{\sig
 $$
 
 ```{julia}
-pdfₑₓ₀₂(𝕩) = exp(- ((𝕩-2))^2 / (2*2)) / sqrt(2π*2); # Gaussian density with mean 2 and variance 2
+# pdfₑₓ₀₂(𝕩, μ=2., σ²=2.) = exp(- (𝕩-μ)^2 / (2*σ²)) / sqrt(2π*σ²) # Gaussian density with mean 2 and variance 2
+logpdfₑₓ₀₂(𝕩, μ=2., σ²=2.) = - (𝕩-μ)^2 / (2*σ²) - log(2π*σ²) / 2  # Gaussian density with mean 2 and variance 2
 
 samplesₑₓ₀₂ = zeros(N_samples);
 xᵢ = 0.; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´ = rngₑₓ₀₂(xᵢ)
-	if pdfₑₓ₀₂(xᵢ´) / pdfₑₓ₀₂(xᵢ) > rand()
+	# if pdfₑₓ₀₂(xᵢ´) / pdfₑₓ₀₂(xᵢ) > rand()
+	if logpdfₑₓ₀₂(xᵢ´) - logpdfₑₓ₀₂(xᵢ) > log(rand())
 		xᵢ = xᵢ´
 	end
 	samplesₑₓ₀₂[i] = xᵢ
 end
 
 histogram(samplesₑₓ₀₂, normed=true, bins=N_bins, label="drawn samples", fill=false)
-plot!(pdfₑₓ₀₂, label="Gaussian PDF")
+# plot!(pdfₑₓ₀₂, label="Gaussian PDF")
+plot!(𝕩 -> exp(logpdfₑₓ₀₂(𝕩)), label="Gaussian PDF")
 ```
 
 ## exercise 03
@@ -257,20 +260,23 @@ f(x) = \begin{cases}
 $$
 
 ```{julia}
-pdfₑₓ₀₃(𝕩) = 3≤𝕩≤7 ? .25 : 0.; # 1/(7-3) = 0.25
+#  pdfₑₓ₀₃(𝕩, a=3., b=7.) = a≤𝕩≤b ? 1/(b-a)   : 0.;   # continuous uniform density
+logpdfₑₓ₀₃(𝕩, a=3., b=7.) = a≤𝕩≤b ? -log(b-a) : -Inf; # continuous uniform density
 
 samplesₑₓ₀₃ = zeros(N_samples);
 xᵢ = 5.; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´ = rngₑₓ₀₂(xᵢ)
-	if pdfₑₓ₀₃(xᵢ´) / pdfₑₓ₀₃(xᵢ) > rand()
+	# if pdfₑₓ₀₃(xᵢ´) / pdfₑₓ₀₃(xᵢ) > rand()
+	if logpdfₑₓ₀₃(xᵢ´) - logpdfₑₓ₀₃(xᵢ) > log(rand())
 		xᵢ = xᵢ´
 	end
 	samplesₑₓ₀₃[i] = xᵢ
 end
 
 histogram(samplesₑₓ₀₃, normed=true, bins=N_bins, label="drawn samples", fill=false)
-plot!(pdfₑₓ₀₃, label="uniform PDF")
+# plot!(pdfₑₓ₀₃, label="uniform PDF")
+plot!(𝕩 -> exp(logpdfₑₓ₀₃(𝕩)), label="uniform PDF")
 ```
 
 if not change init value, no new proposals would be accepted, and the walker would not have moved anywhere
@@ -308,13 +314,15 @@ $$
 Σₑₓ₀₄a = [2. 1.2; 1.2 2.];
 invΣₑₓ₀₄a = inv(Σₑₓ₀₄a);
 sqrtdetΣₑₓ₀₄a = sqrt(det(Σₑₓ₀₄a));
-pdfₑₓ₀₄a(𝕩, 𝕪) = exp(- dot([𝕩, 𝕪], invΣₑₓ₀₄a, [𝕩, 𝕪]) / 2) / (2π * sqrtdetΣₑₓ₀₄a);
+# pdfₑₓ₀₄a(𝕩, 𝕪) = exp(- dot([𝕩, 𝕪], invΣₑₓ₀₄a, [𝕩, 𝕪]) / 2) / (2π * sqrtdetΣₑₓ₀₄a);
+logpdfₑₓ₀₄a(𝕩, 𝕪) = - dot([𝕩, 𝕪], invΣₑₓ₀₄a, [𝕩, 𝕪]) / 2 - log(2π * sqrtdetΣₑₓ₀₄a);
 
 samplesₑₓ₀₄a = zeros(N_samples, 2);
 xᵢ, yᵢ = 0., 0.; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
-	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+	# if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+	if logpdfₑₓ₀₄a(xᵢ´, yᵢ´) - logpdfₑₓ₀₄a(xᵢ, yᵢ) > log(rand())
 		xᵢ, yᵢ = xᵢ´, yᵢ´
 	end
 	samplesₑₓ₀₄a[i, :] .= [xᵢ, yᵢ]
@@ -326,9 +334,9 @@ histogram2d(samplesₑₓ₀₄a[:, 1], samplesₑₓ₀₄a[:, 2], bins=N_bins,
 ```
 
 ```{julia}
-p = plot(layout=2)
-histogram!(p, samplesₑₓ₀₄a[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
-histogram!(p, samplesₑₓ₀₄a[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+pₑₓ₀₄a = plot(layout=2)
+histogram!(pₑₓ₀₄a, samplesₑₓ₀₄a[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(pₑₓ₀₄a, samplesₑₓ₀₄a[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
 ```
 
 ### sub-exr 4.b. {.unnumbered}
@@ -342,13 +350,15 @@ f(x) = \begin{cases}
 $$
 
 ```{julia}
-pdfₑₓ₀₄b(𝕩, 𝕪) = 3≤𝕩≤7 && 1≤𝕪≤9 ? .03125 : 0.; # 1/(7-3)/(9-1) = 0.03125
+#  pdfₑₓ₀₄b(𝕩, 𝕪) = 3≤𝕩≤7 && 1≤𝕪≤9 ? .03125   : 0.;   # 1/(7-3)/(9-1) = 0.03125
+logpdfₑₓ₀₄b(𝕩, 𝕪) = 3≤𝕩≤7 && 1≤𝕪≤9 ? -log(32) : -Inf; # 1/(7-3)/(9-1) = 1/32
 
 samplesₑₓ₀₄b = zeros(N_samples, 2);
 xᵢ, yᵢ = 5., 5.; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
-	if pdfₑₓ₀₄b(xᵢ´, yᵢ´) / pdfₑₓ₀₄b(xᵢ, yᵢ) > rand()
+	# if pdfₑₓ₀₄b(xᵢ´, yᵢ´) / pdfₑₓ₀₄b(xᵢ, yᵢ) > rand()
+	if logpdfₑₓ₀₄b(xᵢ´, yᵢ´) - logpdfₑₓ₀₄b(xᵢ, yᵢ) > log(rand())
 		xᵢ, yᵢ = xᵢ´, yᵢ´
 	end
 	samplesₑₓ₀₄b[i, :] .= [xᵢ, yᵢ]
@@ -360,9 +370,9 @@ histogram2d(samplesₑₓ₀₄b[:, 1], samplesₑₓ₀₄b[:, 2], bins=N_bins,
 ```
 
 ```{julia}
-p = plot(layout=2)
-histogram!(p, samplesₑₓ₀₄b[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
-histogram!(p, samplesₑₓ₀₄b[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+pₑₓ₀₄b = plot(layout=2)
+histogram!(pₑₓ₀₄b, samplesₑₓ₀₄b[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(pₑₓ₀₄b, samplesₑₓ₀₄b[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
 ```
 
 ## exercise 05
@@ -380,7 +390,7 @@ samplesₑₓ₀₅1 = zeros(N_samples, 2);
 xᵢ, yᵢ = 0., 0.; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´, yᵢ´ = rngₑₓ₀₅1(xᵢ, yᵢ)
-	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+	if logpdfₑₓ₀₄a(xᵢ´, yᵢ´) - logpdfₑₓ₀₄a(xᵢ, yᵢ) > log(rand())
 		xᵢ, yᵢ = xᵢ´, yᵢ´
 	end
 	samplesₑₓ₀₅1[i, :] .= [xᵢ, yᵢ]
@@ -396,7 +406,7 @@ samplesₑₓ₀₅2 = zeros(N_samples, 2);
 xᵢ, yᵢ = 0., 0.; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´, yᵢ´ = rngₑₓ₀₅2(xᵢ, yᵢ)
-	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+	if logpdfₑₓ₀₄a(xᵢ´, yᵢ´) - logpdfₑₓ₀₄a(xᵢ, yᵢ) > log(rand())
 		xᵢ, yᵢ = xᵢ´, yᵢ´
 	end
 	samplesₑₓ₀₅2[i, :] .= [xᵢ, yᵢ]
@@ -429,7 +439,7 @@ samplesₑₓ₀₆ = zeros(N_samples, 2);
 xᵢ, yᵢ = 0., 0.; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´, yᵢ´ = rngₑₓ₀₆(xᵢ, yᵢ)
-	if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+	if logpdfₑₓ₀₄a(xᵢ´, yᵢ´) - logpdfₑₓ₀₄a(xᵢ, yᵢ) > log(rand())
 		xᵢ, yᵢ = xᵢ´, yᵢ´
 	end
 	samplesₑₓ₀₆[i, :] .= [xᵢ, yᵢ]
@@ -466,7 +476,7 @@ for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	samplesₑₓ₀₇[i] = xᵢ
 end
 
-plot(samplesₑₓ₀₇)
+plot(samplesₑₓ₀₇, label=nothing)
 ```
 
 a true random walk, in other words Markov chain without Monte Carlo
@@ -496,7 +506,7 @@ samplesₑₓ₀₉ = zeros(N_samples);
 xᵢ = 1e-3; # start at 0. will collapse everything
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´ = rngₑₓ₀₂(xᵢ)
-	if xᵢ´ > 0 && pdfₑₓ₀₂(log(xᵢ´)) / pdfₑₓ₀₂(log(xᵢ)) > rand()
+	if xᵢ´ > 0 && logpdfₑₓ₀₂(log(xᵢ´)) - logpdfₑₓ₀₂(log(xᵢ)) > log(rand())
 		xᵢ = xᵢ´
 	end
 	samplesₑₓ₀₉[i] = xᵢ
@@ -517,7 +527,6 @@ histogram(samplesₑₓ₀₉, normed=true, bins=N_bins, label="drawn samples", 
 plot!(𝕩 -> exp(-(log(𝕩)-μ̂ₑₓ₀₉)^2/(2*σ̂²ₑₓ₀₉))/(𝕩*sqrt(2π*σ̂²ₑₓ₀₉)), label="log-normal PDF")
 ```
 
-
 # Autocorrelation & convergence
 
 ## quick summary {.unnumbered}
@@ -532,7 +541,7 @@ MCMC produces correlated samples due to its Markovian nature. Key properties inc
 
 ::: {.callout-note}
 
-Re-do exercise 02 but now look at convergence: Plot the $x$ chain as a function of timestep. Also split the chain into 4 contiguous segments (the 1st, 2nd, 3rd, and 4th quarters of the chain). In each of these four, compute the empirical mean and empirical variance of $x$. What do you conclude about convergence from these heuristics?
+Re-do exercise 02 but now look at convergence: Plot the $x$ chain as a function of timestep. Also split the chain into 4 contiguous segments (the 1st, 2nd, 3rd, and 4th quarters of the chain). In each of these 7, compute the empirical mean and empirical variance of $x$. What do you conclude about convergence from these heuristics?
 
 :::
 
@@ -544,7 +553,7 @@ plot(samplesₑₓ₀₂, label=nothing)
 # copied from https://discourse.julialang.org/t/split-vector-into-n-potentially-unequal-length-subvectors/73548/4
 samplesₑₓ₀₂_4chunks = begin
 	c = N_samples ÷ 4
-	[samplesₑₓ₀₂[1+c*k:(k == 3 ? end : c*k+c)] for k = 0:3]
+	[samplesₑₓ₀₂[1+c*k:(k == 3 ? end : c*k+c)] for k ∈ 0:3]
 end;
 
 plot(samplesₑₓ₀₂_4chunks, label=["1" "2" "3" "4"])
@@ -566,7 +575,26 @@ Write a piece of code that computes the empirical autocorrelation function. You 
 
 :::
 
+naive implementation: $\mathcal{O}(n^2)$: copied from <https://github.com/JuliaStats/StatsBase.jl/blob/master/src/signalcorr.jl>
+
+the author talked about fast fourrier transform that can be $\mathcal{O}(n\log n)$ instead, so must use `FFTW` package and do zero-padding, see <https://dsp.stackexchange.com/a/54934/69029>
+
+
 ```{julia}
+function autocorr(𝕩; lags=1:length(𝕩))
+	lx = length(𝕩)
+	z̄ = 𝕩 .- mean(𝕩)
+	res = map(lags) do l # naive implementation: 𝒪(n²)
+		dot(z̄[begin:(lx-l)], z̄[(1+l):end])
+	end
+	return res ./ dot(z̄, z̄)
+end
+```
+
+```{julia}
+Δₑₓ₁₁ = 1:50;
+acfₑₓ₁₁ = autocorr(samplesₑₓ₀₂; lags=Δₑₓ₁₁);
+plot(Δₑₓ₁₁, acfₑₓ₁₁, label=nothing, xlabel="Δ", ylabel="Cₓ(Δ)")
 ```
 
 ## exercise 12
@@ -579,14 +607,49 @@ Implement an iterative procedure for automatically choosing $M$. (The recipe giv
 
 :::
 
+i read Sokal 1997 but admittedly no clue, so instead i transpile the authors’ code
+
 ```{julia}
+function autocorr_time_simple(acf, window)
+	return 1 + 2 * sum(acf[2:window])
+end
+
+function autocorr_time_iterative(acf, c=10, low=10)
+	high = length(acf) ÷ c
+	for M ∈ low:high
+		τ = autocorr_time_simple(acf, M)
+		if τ > 1 && M > c*τ
+			return τ
+		end
+	end
+	error("chain too short to estimate τ reliably")
+end
+```
+
+```{julia}
+Nₑₓ₁₂ = 2 .^ (2:floor(Int, log2(N_samples÷2)));
+chainsₑₓ₁₂ = Dict(
+	"1st half" => samplesₑₓ₀₂[begin:(N_samples÷2)],
+	"inter-quarters" => samplesₑₓ₀₂[(N_samples÷4):(3*(N_samples÷4))],
+	"2nd half" => samplesₑₓ₀₂[(N_samples÷2):end],
+	"full" => samplesₑₓ₀₂
+);
+
+pₑₓ₁₂ = plot(xaxis=:log, xlabel="window size", ylabel="τₓ", legend=:bottomleft);
+Threads.@threads for (key, chain) ∈ collect(chainsₑₓ₁₂) # need collect for multi-thread
+	acf = autocorr(chain)
+	τs = [autocorr_time_simple(acf, n) for n ∈ Nₑₓ₁₂]
+	τ = round(autocorr_time_iterative(acf); digits=2)
+	plot!(pₑₓ₁₂, Nₑₓ₁₂, τs, label="$key (τₓ=$τ)")
+end
+pₑₓ₁₂
 ```
 
 # Tuning
 
 ## quick summary {.unnumbered}
 
-Effective MCMC requires tuning the proposal distribution (*e.g.*, Gaussian with adjustable covariance). Optimal acceptance rates (20–50%) balance exploration and efficiency. Adaptive methods adjust proposal scales during burn-in to achieve target acceptance rates.
+Effective MCMC requires tuning the proposal distribution (*e.g.*, Gaussian with adjustable covariance). Optimal acceptance rates (Goldilocks ratio) =25–50% balance exploration and efficiency. Adaptive methods adjust proposal scales during burn-in to achieve target acceptance rates.
 
 ## exercise 13
 
@@ -597,29 +660,70 @@ Run the MCMC sampling of exercise 04 with the covariant Gaussian density. Give t
 :::
 
 ```{julia}
+Qₑₓ₁₃ = 2. .^ (-2:5);
+rngₑₓ₁₃(𝕩, 𝕪, ℚ) = xᵢ + ℚ*randn(), yᵢ + ℚ*randn();
+
+accept_ratioₑₓ₁₃ = map(Qₑₓ₁₃) do q
+	accept_count = 0
+	global xᵢ, yᵢ = 0., 0. # somehow scope problem
+	for i ∈ 1:N_samples
+		xᵢ´, yᵢ´ = rngₑₓ₁₃(xᵢ, yᵢ, q)
+		if logpdfₑₓ₀₄a(xᵢ´, yᵢ´) - logpdfₑₓ₀₄a(xᵢ, yᵢ) > log(rand())
+			xᵢ, yᵢ = xᵢ´, yᵢ´
+			accept_count += 1
+		end
+	end
+	accept_count / N_samples
+end;
+
+plot(Qₑₓ₁₃, accept_ratioₑₓ₁₃, xaxis=:log, xlabel="Q", ylabel="acceptance ratio", label=nothing)
+hline!([.25], label="25% accept")
 ```
+
+value $Q$ would be between: `{julia} Qₑₓ₁₃[findlast(𝕩 -> 𝕩 > .25, accept_ratioₑₓ₁₃)]` and `{julia} Qₑₓ₁₃[findfirst(𝕩 -> 𝕩 < .25, accept_ratioₑₓ₁₃)]`
 
 ## exercise 14
 
 ::: {.callout-note}
 
-Re-do exercise 13 but instead of trying to reach a certain acceptance fraction, try to minimize the autocorrelation time. You will need one of the autocorrelation-time estimators you might have built in a previous exercise. (This, by the way, is the Right Thing To Do, but often expensive.) What do you get as the best value of $Q$ in this case? Again, just evaluate on a coarse logarithmic grid.
+Re-do exercise 13 but instead of trying to reach a certain acceptance fraction, try to minimize the autocorrelation time. You will need one of the autocorrelation-time estimators you might have built in a previous exercise. (This, by the way, is the *Right Thing To Do*, but often expensive.) What do you get as the best value of $Q$ in this case? Again, just evaluate on a coarse logarithmic grid.
 
 :::
 
 ```{julia}
+τsₑₓ₁₄ = zeros(length(Qₑₓ₁₃), 2); # x & y
+
+Threads.@threads for (idx, q) ∈ collect(enumerate(Qₑₓ₁₃)) # need collect for multi-thread
+	samples = zeros(N_samples, 2)
+	global xᵢ, yᵢ = 0., 0. # somehow scope problem
+	for i ∈ 1:N_samples
+		xᵢ´, yᵢ´ = rngₑₓ₁₃(xᵢ, yᵢ, q)
+		if logpdfₑₓ₀₄a(xᵢ´, yᵢ´) - logpdfₑₓ₀₄a(xᵢ, yᵢ) > log(rand())
+			xᵢ, yᵢ = xᵢ´, yᵢ´
+		end
+		samples[i, :] .= [xᵢ, yᵢ]
+	end
+
+	acf_x, acf_y = autocorr(samples[:, 1]), autocorr(samples[:, 2])
+	τsₑₓ₁₄[idx, 1] = autocorr_time_iterative(acf_x)
+	τsₑₓ₁₄[idx, 2] = autocorr_time_iterative(acf_y)
+end
+
+plot(Qₑₓ₁₃, τsₑₓ₁₄[:, 1], xaxis=:log, xlabel="Q", ylabel="τₓ", label="x")
+plot!(Qₑₓ₁₃, τsₑₓ₁₄[:, 2], label="y")
 ```
+
+maybe i made errors somewhere
 
 ## exercise 15
 
 ::: {.callout-note}
 
-In exercise 13 you varied only the parameter $Q$, but really there are three free parameters (2 variances and a covariance). If the problem was $D$-dimensional, how many tuning parameters would there be, in principle?
+In exercise 13 you varied only the parameter $Q$, but really there are 3 free parameters (2 variances and a covariance). If the problem was $D$-dimensional, how many tuning parameters would there be, in principle?
 
 :::
 
-```{julia}
-```
+i’m not sure, maybe $\frac{D(D+1)}{2}$ tuning parameters?
 
 ## exercise 16
 
@@ -630,6 +734,28 @@ The Rosenbrock density used as a demonstration case for many samplers (see, for 
 :::
 
 ```{julia}
+logpdfₑₓ₁₅(𝕩, 𝕪) = -(100*(𝕪-𝕩^2)^2 + (1-𝕩)^2) / 20;
+
+samplesₑₓ₁₅ = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
+	# if pdfₑₓ₀₄a(xᵢ´, yᵢ´) / pdfₑₓ₀₄a(xᵢ, yᵢ) > rand()
+	if logpdfₑₓ₁₅(xᵢ´, yᵢ´) - logpdfₑₓ₁₅(xᵢ, yᵢ) > log(rand())
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+	end
+	samplesₑₓ₁₅[i, :] .= [xᵢ, yᵢ]
+end
+```
+
+```{julia}
+histogram2d(samplesₑₓ₁₅[:, 1], samplesₑₓ₁₅[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+```
+
+```{julia}
+pₑₓ₁₅ = plot(layout=2)
+histogram!(pₑₓ₁₅, samplesₑₓ₁₅[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(pₑₓ₁₅, samplesₑₓ₁₅[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
 ```
 
 # Initialization and burn-in
@@ -647,6 +773,17 @@ Re-do exercise 02 but with different starting positions. What happens as you mak
 :::
 
 ```{julia}
+samplesₑₓ₁₅ = zeros(N_samples);
+xᵢ = 1e20; # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	if logpdfₑₓ₀₂(xᵢ´) - logpdfₑₓ₀₂(xᵢ) > log(rand())
+		xᵢ = xᵢ´
+	end
+	samplesₑₓ₁₅[i] = xᵢ
+end
+
+plot(samplesₑₓ₁₅, label=nothing)
 ```
 
 ## exercise 18
