@@ -1,0 +1,65 @@
+name: Render and Publish
+
+on:
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - .editorconfig
+      - .gitattributes
+      - .gitignore
+      - .gitlab-ci.yml
+      - LICENSE
+      - README.md
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: hogg2017.qmd
+          sparse-checkout-cone-mode: false
+      - uses: julia-actions/setup-julia@v1
+      - name: install dependencies and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin
+          julia --project=. -e 'using Pkg; Pkg.add(["StatsPlots", "FFTW", "Optim"])'
+          mkdir /tmp/juliamono
+          wget -P /tmp/juliamono https://github.com/cormullion/juliamono/releases/latest/download/JuliaMono-ttf.zip
+          unzip /tmp/juliamono/JuliaMono-ttf.zip -d /tmp/juliamono
+          sudo mv /tmp/juliamono/*.ttf /usr/local/share/fonts/
+          sudo fc-cache -fv
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          tinytex: true
+      - uses: quarto-dev/quarto-actions/render@v2
+        with:
+          path: hogg2017.qmd
+      - name: clean up
+        run: |
+          rm hogg2017.qmd *.toml
+          rm -r .cache
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}

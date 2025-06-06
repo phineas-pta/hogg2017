@@ -72,7 +72,8 @@ this document’s computations were carried out with `julia` `{julia} VERSION`, 
 
 reference: **David W. Hogg**, **Daniel Foreman-Mackey**. 2017. *Data analysis recipes: using Markov chain Monte Carlo*
 
-- paper: <https://arxiv.org/pdf/1710.06068>
+- paper: <https://iopscience.iop.org/article/10.3847/1538-4365/aab76e>
+- pre-print: <https://arxiv.org/pdf/1710.06068>
 - source code: <https://github.com/davidwhogg/mcmc/blob/master/mcmc.tex>
 
 you will also find here other papers from the *Data analysis recipes* series by David W. Hogg
@@ -93,18 +94,20 @@ additional resources: the following are various python implementations i’ve co
 ```{julia}
 #| eval: false
 import Pkg
-Pkg.add(["StatsPlots"])
+Pkg.add(["StatsPlots", "FFTW", "Optim"])
 ```
 
 ```{julia}
-using Statistics: mean, var
+using Statistics: mean, var, median, quantile
 using LinearAlgebra: dot, det
 using StatsPlots
+using FFTW: fft, ifft
+using Optim: optimize
 ```
 
 options to run MCMC chains
 ```{julia}
-const N_samples = 10000;
+const N_samples = 100000;
 const N_bins = max(isqrt(N_samples), N_samples ÷ 200); # in histogram
 ```
 
@@ -476,7 +479,7 @@ for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	samplesₑₓ₀₇[i] = xᵢ
 end
 
-plot(samplesₑₓ₀₇, label=nothing)
+plot(samplesₑₓ₀₇, label=nothing, xlabel="step")
 ```
 
 a true random walk, in other words Markov chain without Monte Carlo
@@ -541,7 +544,7 @@ MCMC produces correlated samples due to its Markovian nature. Key properties inc
 
 ::: {.callout-note}
 
-Re-do exercise 02 but now look at convergence: Plot the $x$ chain as a function of timestep. Also split the chain into 4 contiguous segments (the 1st, 2nd, 3rd, and 4th quarters of the chain). In each of these 7, compute the empirical mean and empirical variance of $x$. What do you conclude about convergence from these heuristics?
+Re-do exercise 02 but now look at convergence: Plot the $x$ chain as a function of timestep. Also split the chain into 4 contiguous segments (the 1st, 2nd, 3rd, and 4th quarters of the chain). In each of these 4, compute the empirical mean and empirical variance of $x$. What do you conclude about convergence from these heuristics?
 
 :::
 
@@ -577,24 +580,38 @@ Write a piece of code that computes the empirical autocorrelation function. You 
 
 naive implementation: $\mathcal{O}(n^2)$: copied from <https://github.com/JuliaStats/StatsBase.jl/blob/master/src/signalcorr.jl>
 
-the author talked about fast fourrier transform that can be $\mathcal{O}(n\log n)$ instead, so must use `FFTW` package and do zero-padding, see <https://dsp.stackexchange.com/a/54934/69029>
-
-
 ```{julia}
-function autocorr(𝕩; lags=1:length(𝕩))
-	lx = length(𝕩)
+#| eval: false
+#| code-fold: true
+#| code-summary: "hidden unrecommended code"
+
+# DRAFT (SHOULDN’T USE): naive implementation: 𝒪(n²)
+function autocorr_naive(𝕩)
 	z̄ = 𝕩 .- mean(𝕩)
-	res = map(lags) do l # naive implementation: 𝒪(n²)
-		dot(z̄[begin:(lx-l)], z̄[(1+l):end])
+	res = map(1:length(𝕩)) do lag
+		dot(z̄[begin:(end-lag)], z̄[(1+lag):end])
 	end
 	return res ./ dot(z̄, z̄)
 end
 ```
 
+the author talked about fast fourrier transform that can be $\mathcal{O}(n\log n)$ instead, so must use `FFTW` package and do zero-padding, see <https://dsp.stackexchange.com/a/54934/69029>
+
 ```{julia}
-Δₑₓ₁₁ = 1:50;
-acfₑₓ₁₁ = autocorr(samplesₑₓ₀₂; lags=Δₑₓ₁₁);
-plot(Δₑₓ₁₁, acfₑₓ₁₁, label=nothing, xlabel="Δ", ylabel="Cₓ(Δ)")
+# recommendation: use fft: 𝒪(n log n)
+function autocorr(𝕩)
+	n = length(𝕩)
+	𝕩̄ = vcat(𝕩 .- mean(𝕩), zeros(n))
+	A = fft(𝕩̄)
+	S = abs2.(A) # A .* conj(A)
+	res = real(ifft(S))[begin:n]
+	return res ./ res[begin]
+end
+```
+
+```{julia}
+acfₑₓ₁₁ = autocorr(samplesₑₓ₀₂);
+plot(acfₑₓ₁₁[1:50], label=nothing, xlabel="Δ", ylabel="Cₓ(Δ)")
 ```
 
 ## exercise 12
@@ -607,7 +624,7 @@ Implement an iterative procedure for automatically choosing $M$. (The recipe giv
 
 :::
 
-i read Sokal 1997 but admittedly no clue, so instead i transpile the authors’ code
+i read Sokal 1997 but admittedly i don’t understand anything, so instead i transpile the authors’ code
 
 ```{julia}
 function autocorr_time_simple(acf, window)
@@ -628,12 +645,16 @@ end
 
 ```{julia}
 Nₑₓ₁₂ = 2 .^ (2:floor(Int, log2(N_samples÷2)));
-chainsₑₓ₁₂ = Dict(
-	"1st half" => samplesₑₓ₀₂[begin:(N_samples÷2)],
-	"inter-quarters" => samplesₑₓ₀₂[(N_samples÷4):(3*(N_samples÷4))],
-	"2nd half" => samplesₑₓ₀₂[(N_samples÷2):end],
-	"full" => samplesₑₓ₀₂
-);
+chainsₑₓ₁₂ = begin
+	N½ = N_samples ÷ 2
+	N¼ = N_samples ÷ 4
+	Dict(
+		"1st half" => samplesₑₓ₀₂[begin:N½],
+		"inter-quarters" => samplesₑₓ₀₂[N¼:(3*N¼)],
+		"2nd half" => samplesₑₓ₀₂[N½:end],
+		"full" => samplesₑₓ₀₂
+	)
+end;
 
 pₑₓ₁₂ = plot(xaxis=:log, xlabel="window size", ylabel="τₓ", legend=:bottomleft);
 Threads.@threads for (key, chain) ∈ collect(chainsₑₓ₁₂) # need collect for multi-thread
@@ -713,7 +734,7 @@ plot(Qₑₓ₁₃, τsₑₓ₁₄[:, 1], xaxis=:log, xlabel="Q", ylabel="τₓ
 plot!(Qₑₓ₁₃, τsₑₓ₁₄[:, 2], label="y")
 ```
 
-maybe i made errors somewhere
+the graph is weird, maybe i made errors somewhere
 
 ## exercise 15
 
@@ -758,6 +779,12 @@ histogram!(pₑₓ₁₅, samplesₑₓ₁₅[:, 1], subplot=1, normed=true, bin
 histogram!(pₑₓ₁₅, samplesₑₓ₁₅[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
 ```
 
+```{julia}
+acfₑₓ₁₅x, acfₑₓ₁₅y = autocorr(samplesₑₓ₁₅[:, 1]), autocorr(samplesₑₓ₁₅[:, 2]);
+plot(acfₑₓ₁₅x, label="x", xaxis=:log, xlabel="lag", ylabel="autocorrelation")
+plot!(acfₑₓ₁₅y, label="y")
+```
+
 # Initialization and burn-in
 
 ## quick summary {.unnumbered}
@@ -773,18 +800,20 @@ Re-do exercise 02 but with different starting positions. What happens as you mak
 :::
 
 ```{julia}
-samplesₑₓ₁₅ = zeros(N_samples);
-xᵢ = 1e20; # start
+samplesₑₓ₁₇ = zeros(N_samples);
+xᵢ = 1000; # start
 for i ∈ 1:N_samples # do not use multi-thread loop because of data races
 	xᵢ´ = rngₑₓ₀₂(xᵢ)
 	if logpdfₑₓ₀₂(xᵢ´) - logpdfₑₓ₀₂(xᵢ) > log(rand())
 		xᵢ = xᵢ´
 	end
-	samplesₑₓ₁₅[i] = xᵢ
+	samplesₑₓ₁₇[i] = xᵢ
 end
 
-plot(samplesₑₓ₁₅, label=nothing)
+plot(samplesₑₓ₁₇[begin:(N_samples ÷ 20)], label=nothing, xlabel="step")
 ```
+
+take a few thousands burn-in steps
 
 ## exercise 18
 
@@ -795,7 +824,28 @@ Check the scaling you found in exercise 17 with a higher-dimensional Gaussian (t
 :::
 
 ```{julia}
+rngₑₓ₁₈(𝕩⃗) = [𝕩 + randn() for 𝕩 ∈ 𝕩⃗];
+
+logpdfₑₓ₁₈(𝕩⃗, μ=2., σ²=2.) = sum(
+	- (𝕩-μ)^2 / (2*σ²) - log(2π*σ²) / 2
+	for 𝕩 ∈ 𝕩⃗
+); # assume independance of all gaussian (i.e. no covariance)
+
+Nₑₓ₁₈ = 10;
+samplesₑₓ₁₈ = zeros(N_samples, Nₑₓ₁₈);
+x⃗ᵢ = fill(1000, Nₑₓ₁₈); # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	x⃗ᵢ´ = rngₑₓ₁₈(x⃗ᵢ)
+	if logpdfₑₓ₁₈(x⃗ᵢ´) - logpdfₑₓ₁₈(x⃗ᵢ) > log(rand())
+		x⃗ᵢ = x⃗ᵢ´
+	end
+	samplesₑₓ₁₈[i, :] .= x⃗ᵢ
+end
+
+plot(samplesₑₓ₁₈[begin:(N_samples ÷ 10), 1], label="x₁", xlabel="step")
 ```
+
+take much longer burn-in
 
 ## exercise 19
 
@@ -806,17 +856,55 @@ Import (or write) an optimizer, and upgrade the code you wrote for exercise 17 t
 :::
 
 ```{julia}
+logpdfₑₓ₁₉(𝕩) = (𝕩-2)^2 / (2*2) + log(2π*2) / 2 # inverse sign to do optimization (i.e. minimization)
+xₑₓ₁₉ = minimum(optimize(logpdfₑₓ₁₉, -10, 10))
 ```
+
+optimum of normal logpdf = can use Newton-Raphson method to find root of its derivative<br />
+but since it’s a quadratic function, analytical solution is trivial
 
 # Results, error bars, and figures
 
-*no exercise in this section*
+## quick summary {.unnumbered}
 
-quick summary: Recommendations for reporting:
+Recommendations for reporting:
 
 - Plots: Trace plots (to assess mixing), histograms, and corner plots (showing covariances).
 - Statistics: Use medians and quantiles for credible intervals instead of the best sample.
 - Sample Sharing: Publish posterior samples with prior evaluations for reproducibility.
+
+## exercise 20
+
+::: {.callout-note}
+
+Execute exercise 16, or —if you are lazy— just install and use `emcee` to do the hard work. Now plot the $x$ and $y$ histograms of a 10,000-point sampling of this distribution (you might have to sample more than 10,000 and thin the chain), and also plot the 2-dimensional scatter plot of $x,y$ samples.
+
+Overplot on all 3 plots an indicator of the means and medians of the samples along the $x$ and $y$ directions. Overplot on all 3 plots the (above) recommended quantiles of the samples. Comment on the results.
+
+:::
+
+the authors usually recommend as a default behavior —in the one-dimensional case— to choose the median of sampling as the measurement value, the 16% quantile as the lower 1σ error bar, and the 84% quantile as the upper 1σ error bar. This has pathologies in higher dimensions, but it is pretty safe for one-dimensional answers.
+
+```{julia}
+mean_x, mean_y = mean(samplesₑₓ₁₅; dims=1);
+median_x, median_y = median(samplesₑₓ₁₅; dims=1);
+q16_x, q84_x = quantile(samplesₑₓ₁₅[:, 1], [.16, .84]);
+q16_y, q84_y = quantile(samplesₑₓ₁₅[:, 2], [.16, .84]);
+```
+
+```{julia}
+histogram2d(samplesₑₓ₁₅[:, 1], samplesₑₓ₁₅[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+vline!([mean_x median_x q16_x q84_x], label=["mean x" "median x" "16% x" "84% x"])
+hline!([mean_y median_y q16_y q84_y], label=["mean y" "median y" "16% y" "84% y"])
+```
+
+```{julia}
+pₑₓ₂₀ = plot(layout=2)
+histogram!(pₑₓ₂₀, samplesₑₓ₁₅[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+vline!(pₑₓ₂₀, [mean_x median_x q16_x q84_x], subplot=1, label=["mean" "median" "16%" "84%"])
+histogram!(pₑₓ₂₀, samplesₑₓ₁₅[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+vline!(pₑₓ₂₀, [mean_y median_y q16_y q84_y], subplot=2, label=["mean" "median" "16%" "84%"])
+```
 
 # Troubleshooting and advice
 
