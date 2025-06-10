@@ -1,0 +1,1052 @@
+---
+title: "solutions to the exercises in “Data analysis recipes: Using Markov Chain Monte Carlo”"
+subtitle: "Julia implementation of solutions to the exercises in David Hogg’s 2017 tutorial paper on McMC"
+author:
+  - name: "PTA"
+    affiliations: "Distinguished Scholar of Treasure Hoarder Socio-Economics, Northland Bank archives, Snezhnaya"
+license: "CC BY"
+engine: julia
+execute:
+  cache: true # prevent re-running all code chunks when rendering multiple formats
+julia:
+  exeflags: ["--threads=auto", "--color=no", "--project=."]
+format:
+  pdf:
+    mathspec: true # prevent weird error with github actions: extended mathchar used as mathchar
+    colorlinks: true
+    highlight-style: dracula
+    documentclass: scrreprt
+    papersize: a4
+    geometry: ["margin=1cm", "footskip=5mm"]
+    include-in-header:
+      text: |
+        \usepackage{fvextra} % to break long line in code block
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+    include-before-body:
+      text: |
+        \RecustomVerbatimEnvironment{verbatim}{Verbatim}{showspaces=false,showtabs=false,breaksymbolleft={},breaklines}
+    monofont: "JuliaMono-Regular" #  must be installed at system level, e.g. C:\Windows\Fonts or /usr/local/share/fonts/
+    fig-align: center
+  html:
+    page-layout: full
+    toc-location: left-body
+    theme:
+      light: united
+      dark: superhero
+    respect-user-color-scheme: true
+    highlight-style: gruvbox
+    title-block-banner: true
+    anchor-sections: false
+    smooth-scroll: true
+    include-in-header:
+      text: |
+        <style>
+        @font-face {font-family: JuliaMono; src: url("https://cdn.jsdelivr.net/gh/cormullion/juliamono-webfonts/JuliaMono-Regular.woff2");}
+        pre, code {font-family: JuliaMono, monospace;}
+        li > a {overflow-wrap: anywhere;} /* for mobile view */
+        mjx-container[display="true"] {overflow-x: auto;} /* for mobile view */
+        </style>
+    output-file: index.html # to be used in github actions (deploy as github pages)
+toc: true
+number-sections: true
+code-line-numbers: true
+callout-appearance: minimal
+editor: source
+---
+
+<!--
+to show plot in pdf, need rsvg-convert
+- in linux: install librsvg or the like
+- in windows to show plot: download rsvg-convert.exe into <quarto path>\bin\tools
+	- https://github.com/miyako/console-rsvg-convert/releases or
+	- https://sourceforge.net/projects/tumagcc/files/rsvg-convert-2.40.20.7z/download
+-->
+
+# preliminary {.unnumbered}
+
+source code of this document: <https://github.com/phineas-pta/hogg2017/blob/main/hogg2017.qmd>
+
+this document’s computations were carried out with `julia` `{julia} VERSION`, and its rendering was achieved via `quarto` {{< version >}}
+
+## references & resources {.unnumbered}
+
+reference: **David W. Hogg**, **Daniel Foreman-Mackey**. 2017. *Data analysis recipes: using Markov chain Monte Carlo*
+
+- paper: <https://iopscience.iop.org/article/10.3847/1538-4365/aab76e>
+- pre-print: <https://arxiv.org/pdf/1710.06068>
+- source code: <https://github.com/davidwhogg/mcmc/blob/master/mcmc.tex>
+
+you will also find here other papers from the *Data analysis recipes* series by David W. Hogg
+
+- <https://arxiv.org/pdf/2005.14199>
+- <https://arxiv.org/pdf/1008.4686>
+- <https://arxiv.org/pdf/1205.4446>
+- <https://arxiv.org/pdf/0807.4820>
+
+additional resources: the following are various python implementations i’ve come across, but it’s worth noting that they often do not include solutions for every exercise
+
+- <https://github.com/vipasu/MCMC>
+- <https://github.com/granepura/Data4physics_NYU-Fall2022/blob/main/ProblemSet3_GehanRanepura/PS3-3(q2%2C4%2C10)/PS3-3_(q2%2C4%2C10).ipynb>
+- <https://github.com/vacquaviva/Flatiron_MCMC/blob/master/Flatiron_MCMC.ipynb>
+
+## prepare Julia environment {.unnumbered}
+
+```{julia}
+#| eval: false
+import Pkg
+Pkg.add(["StatsPlots", "FFTW", "Optim"])
+```
+
+```{julia}
+using Statistics: mean, var, median, quantile
+using LinearAlgebra: dot, det
+using StatsPlots
+using FFTW: fft, ifft
+using Optim: optimize
+```
+
+options to run MCMC chains
+```{julia}
+const N_samples = 100000;
+const N_bins = max(isqrt(N_samples), N_samples ÷ 200); # in histogram
+```
+
+# When do you need MCMC?
+
+*no exercise in this section*
+
+quick summary: MCMC is a method for approximating integrals in probabilistic inference, especially useful in high-dimensional spaces. It generates samples from a target distribution (*e.g.*, a posterior probability density function) without needing to compute intractable normalizing constants. The key advantage is its ability to marginalize over nuisance parameters by simply projecting samples onto the parameters of interest.
+
+**MCMC is a sampler**. If you are trying to find the optimum of the likelihood or the posterior pdf, you should use an *optimizer*, not a sampler. If you want to make sure you search all of parameter space, you should use a *search algorithm*, not a sampler. MCMC is good at one thing, and one thing only: **Sampling ill-normalized (or otherwise hard to sample) pdf**.
+
+# What is a sampling?
+
+## quick summary {.unnumbered}
+
+MCMC samples are primarily used for computing integrals, such as reconstructing probability density via histograms or calculating means, medians, and quantiles. This section emphasizes avoiding reporting the mode and instead recommends credible intervals derived from quantiles. Marginalization of parameters is straightforward by discarding nuisance parameters from the samples.
+
+## exercise 01
+
+::: {.callout-note}
+
+Look up (or choose) definitions for the mean, variance, skewness, and kurtosis of a distribution. Also look up or compute the analytic values of these 4 statistics for a top-hat (uniform) distribution. Write a computer program that uses some standard package (such as `numpy`) to generate $K$ random numbers $x$ from a uniform distribution in the interval $0<x<1$.
+
+Now use those $K$ numbers to compute a sampling estimate of the mean, variance, skewness, and kurtosis (4 estimates; look up definitions as needed). Make 4 plot of these 4 estimates as a function of $1/K$ or perhaps $\log_2 K$, for $K=4^n$ for $n=1$ up to $n=10$ (that is, $K=4$, $K=16$, and so on up to $K=1048576$). Over-plot the analytic answers.
+
+What can you conclude?
+
+:::
+
+Mean: assuming the arithmetic mean, simply the sum of a set of values divided by the number of values. Also known as the expected value of a distribution.
+$$
+\mathrm{Mean}(x) = \mu = \mathbb{E}[x] = \int_0^1 x dx = \frac{1}{2}
+$$
+
+Variance: expectation of the squared deviation of a random variable from its mean. Can also be calculated by taking the second moment and subtracting the square of the 1st moment.
+$$
+\mathrm{Var}(x) = \sigma^2 = \mathbb{E}[(x-\mu)^2] = \int_0^1 \left(x - \frac{1}{2}\right)^2 dx = \frac{1}{12}
+$$
+
+Skewness: measures the asymmetry of a distribution about its mean. Positive skew means that there is larger tail to the right.
+$$
+\mathrm{Skew}(x) = \gamma = \mathbb{E}\left[\left( \frac{x-\mu}{\sigma} \right)^3\right] =\int_0^1 \left(\frac{x-\frac{1}{2}}{\frac{1}{\sqrt{12}}}\right)^3 dx = 0
+$$
+
+Kurtosis: corresponds to a scaled version of the fourth moment of a distribution. A high kurtosis value means more mass lies in the tails.
+$$
+\mathrm{Kurt}(x) = \kappa = \mathbb{E}\left[\left( \frac{x-\mu}{\sigma} \right)^4\right] =\int_0^1 \left(\frac{x-\frac{1}{2}}{\frac{1}{\sqrt{12}}}\right)^4 dx = \frac{9}{5}
+$$
+
+```{julia}
+Nₑₓ₀₁ = 10;
+Kₑₓ₀₁ = zeros(Int, Nₑₓ₀₁); # 4ⁿ for n from 1 to 10
+μK    = zeros(Nₑₓ₀₁); # mean
+σ²K   = zeros(Nₑₓ₀₁); # variance
+γK    = zeros(Nₑₓ₀₁); # skewness
+κK    = zeros(Nₑₓ₀₁); # kurtosis
+for i ∈ 1:Nₑₓ₀₁
+	k = 4^i
+	x = rand(k)
+	μₖ = sum(x) / k
+	x_centered = x .- μₖ
+	σ²ₖ = sum(x -> x^2, x_centered) / k
+	x_standardized = x_centered ./ sqrt(σ²ₖ)
+	γₖ = sum(x -> x^3, x_standardized) / k
+	κₖ = sum(x -> x^4, x_standardized) / k
+
+	Kₑₓ₀₁[i] = k
+	μK[i]    = μₖ
+	σ²K[i]   = σ²ₖ
+	γK[i]    = γₖ
+	κK[i]    = κₖ
+end
+```
+
+```{julia}
+scatter(Kₑₓ₀₁, μK, xaxis=:log, label=nothing, title="mean")
+hline!([1/2], label="analytical solution = 1/2")
+```
+
+```{julia}
+scatter(Kₑₓ₀₁, σ²K, xaxis=:log, label=nothing, title="variance")
+hline!([1/12], label="analytical solution = 1/12")
+```
+
+```{julia}
+scatter(Kₑₓ₀₁, γK, xaxis=:log, label=nothing, title="skewness")
+hline!([0], label="analytical solution = 0")
+```
+
+```{julia}
+scatter(Kₑₓ₀₁, κK, xaxis=:log, label=nothing, title="kurtosis")
+hline!([9/5], label="analytical solution = 9/5")
+```
+
+sample size matters for (descriptive) statistics estimation
+
+# Metropolis–Hastings MCMC
+
+## quick summary {.unnumbered}
+
+The Metropolis-Hastings (M-H) algorithm is a foundational MCMC method. It requires a target function and a proposal distribution. The algorithm proposes a new sample and accepts/rejects it based on the ratio of target function values. Convergence relies on detailed balance and a stationary distribution proportional to the target. The proposal distribution must be symmetric or corrected for asymmetry.
+
+## exercise 02
+
+::: {.callout-note}
+
+In your scientific programming language of choice, write a very simple M-H MCMC sampler. Sample in a single parameter $x$ and give the sampler as its density function $p(x)$ a Gaussian density with mean 2 and variance 2. (Note that variance is the *square* of the standard deviation.) Give the sampler a proposal distribution $q(x^{\prime}| x)$ a Gaussian pdf for $x^{\prime}$ with mean $x$ and variance 1. Initialize the sampler with $x=0$ and run the sampler for more than $10^4$ steps. Plot the results as a histogram, with the true density over-plotted sensibly.
+
+:::
+
+proposal distribution: Gaussian pdf for $x^{\prime}$ with mean $x$ and variance 1:
+```{julia}
+rngₑₓ₀₂(𝕩) = 𝕩 + randn();
+```
+
+probability density function of a normally distributed random variable with expected value $\mu$ and variance $\sigma^2$:
+$$
+f(x) = \frac{1}{\sqrt{2\pi}\sigma}\exp{\left(-\frac{1}{2}\left(\frac{x-\mu}{\sigma}\right)^2\right)}
+$$
+
+```{julia}
+# pdfₑₓ₀₂(𝕩, μ=2., σ²=2.) = exp(- (𝕩-μ)^2 / (2*σ²)) / sqrt(2π*σ²); # Gaussian density with mean 2 and variance 2
+logpdfₑₓ₀₂(𝕩, μ=2., σ²=2.) = - (𝕩-μ)^2 / (2*σ²) - log(2π*σ²) / 2;  # Gaussian density with mean 2 and variance 2
+
+samplesₑₓ₀₂ = zeros(N_samples);
+xᵢ = 0.; # start
+# ℒᵢ = pdfₑₓ₀₂(xᵢ); # pre-compute likelihood
+logℒᵢ = logpdfₑₓ₀₂(xᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	# ℒᵢ´ = pdfₑₓ₀₂(xᵢ);
+	logℒᵢ´ = logpdfₑₓ₀₂(xᵢ´)
+	# if ℒᵢ´ / ℒᵢ > rand()
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ = xᵢ´
+		# ℒᵢ = ℒᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₂[i] = xᵢ
+end
+
+histogram(samplesₑₓ₀₂, normed=true, bins=N_bins, label="drawn samples", fill=false)
+# plot!(pdfₑₓ₀₂, label="Gaussian PDF")
+plot!(𝕩 -> exp(logpdfₑₓ₀₂(𝕩)), label="Gaussian PDF")
+```
+
+## exercise 03
+
+::: {.callout-note}
+
+Re-do exercise 02 but now with an input density that is uniform on $3<x<7$ and zero everywhere else. What change did you have to make to the initialization, and why?
+
+:::
+
+probability density function of continuous uniform distribution on interval $[a, b] \subset \mathbb{R}$:
+$$
+f(x) = \begin{cases}
+\frac{1}{b-a} & \text{for } a \le x \le b, \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+```{julia}
+logpdfₑₓ₀₃(𝕩, a=3., b=7.) = a≤𝕩≤b ? -log(b-a) : -Inf; # continuous uniform density
+
+samplesₑₓ₀₃ = zeros(N_samples);
+xᵢ = 5.; # start
+logℒᵢ = logpdfₑₓ₀₃(xᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	logℒᵢ´ = logpdfₑₓ₀₃(xᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ = xᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₃[i] = xᵢ
+end
+
+histogram(samplesₑₓ₀₃, normed=true, bins=N_bins, label="drawn samples", fill=false)
+plot!(𝕩 -> exp(logpdfₑₓ₀₃(𝕩)), label="uniform PDF")
+```
+
+if not change init value, no new proposals would be accepted, and the walker would not have moved anywhere
+
+## exercise 04
+
+::: {.callout-note}
+
+Re-do exercise 02 but now with an input density that is a function of 2 variables $(x, y)$. For the density function use 2 different functions.
+
+a. The first density function is a covariant 2-dimensional Gaussian density with variance tensor $\begin{bmatrix} 2.0 & 1.2 \\ 1.2 & 2.0 \end{bmatrix}$
+
+b. The second density function is a rectangular top-hat function that is uniform on the joint constraint $3<x<7$ and $1<y<9$ and zero everywhere else.
+
+For the proposal distribution $q(x^{\prime}, y^{\prime}\,|\, x, y)$ a 2-dimensional Gaussian density with mean at $[x, y]$ and variance tensor set to the 2-dimensional identity matrix.
+
+Plot the 2 one-dimensional histograms and also a 2-dimensional scatter plot for each sampling. Make a similar plot for the top-hat.
+
+:::
+
+proposal distribution for $(x^{\prime}, y^{\prime})$: 2D Gaussian density with mean at $[x, y]$ and variance tensor set to the 2D identity matrix:
+```{julia}
+rngₑₓ₀₄(𝕩, 𝕪) = 𝕩 + randn(), 𝕪 + randn();
+```
+
+### sub-exr 4.a. {.unnumbered}
+
+probability density function of multivariate normal distribution with $k$-dimensional mean vector $\mu$ and $k \times k$ covariance matrix $\Sigma$ (must also be positive definite)
+$$
+f(x) = \frac{1}{\sqrt{(2\pi)^k \det\Sigma}}\exp\left(-\frac{1}{2} (x - \mu)^\top \Sigma^{-1} (x-\mu)\right)
+$$
+
+```{julia}
+# save covariance matrix to be re-used many times
+Σₑₓ₀₄a = [2. 1.2; 1.2 2.];
+invΣₑₓ₀₄a = inv(Σₑₓ₀₄a);
+sqrtdetΣₑₓ₀₄a = sqrt(det(Σₑₓ₀₄a));
+logpdfₑₓ₀₄a(𝕩, 𝕪) = - dot([𝕩, 𝕪], invΣₑₓ₀₄a, [𝕩, 𝕪]) / 2 - log(2π * sqrtdetΣₑₓ₀₄a);
+
+samplesₑₓ₀₄a = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+logℒᵢ = logpdfₑₓ₀₄a(xᵢ, yᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
+	logℒᵢ´ = logpdfₑₓ₀₄a(xᵢ´, yᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₄a[i, :] .= [xᵢ, yᵢ]
+end
+```
+
+```{julia}
+histogram2d(samplesₑₓ₀₄a[:, 1], samplesₑₓ₀₄a[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+```
+
+```{julia}
+pₑₓ₀₄a = plot(layout=2)
+histogram!(pₑₓ₀₄a, samplesₑₓ₀₄a[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(pₑₓ₀₄a, samplesₑₓ₀₄a[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+```
+
+### sub-exr 4.b. {.unnumbered}
+
+probability density function of multivariate uniform distribution on $\Omega \subset \mathbb{R}^n$ a bounded region with volume (area) $v(\Omega)$
+$$
+f(x) = \begin{cases}
+\frac{1}{v(\Omega)} & \text{for } x \in \Omega, \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+```{julia}
+logpdfₑₓ₀₄b(𝕩, 𝕪) = 3≤𝕩≤7 && 1≤𝕪≤9 ? -log(32) : -Inf; # 1/(7-3)/(9-1) = 1/32
+
+samplesₑₓ₀₄b = zeros(N_samples, 2);
+xᵢ, yᵢ = 5., 5.; # start
+logℒᵢ = logpdfₑₓ₀₄b(xᵢ, yᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
+	logℒᵢ´ = logpdfₑₓ₀₄b(xᵢ´, yᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₄b[i, :] .= [xᵢ, yᵢ]
+end
+```
+
+```{julia}
+histogram2d(samplesₑₓ₀₄b[:, 1], samplesₑₓ₀₄b[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+```
+
+```{julia}
+pₑₓ₀₄b = plot(layout=2)
+histogram!(pₑₓ₀₄b, samplesₑₓ₀₄b[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(pₑₓ₀₄b, samplesₑₓ₀₄b[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+```
+
+## exercise 05
+
+::: {.callout-note}
+
+Re-do exercise 04.a. but with different values for the variance of the proposal distribution $q(x^{\prime}| x)$. What happens when you go to very extreme values (like for instance $10^{-1}$ or $10^2$)?
+
+:::
+
+```{julia}
+rngₑₓ₀₅1(𝕩, 𝕪) = 𝕩 + 1e-1*randn(), 𝕪 + 1e-1*randn();
+
+samplesₑₓ₀₅1 = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+logℒᵢ = logpdfₑₓ₀₄a(xᵢ, yᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₅1(xᵢ, yᵢ)
+	logℒᵢ´ = logpdfₑₓ₀₄a(xᵢ´, yᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₅1[i, :] .= [xᵢ, yᵢ]
+end
+
+histogram2d(samplesₑₓ₀₅1[:, 1], samplesₑₓ₀₅1[:, 2], bins=N_bins, normalize=:pdf, color=:plasma, title="variance = 0.1×I₂")
+```
+
+```{julia}
+rngₑₓ₀₅2(𝕩, 𝕪) =  𝕩 + 1e2*randn(),  𝕪 + 1e2*randn();
+
+samplesₑₓ₀₅2 = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+logℒᵢ = logpdfₑₓ₀₄a(xᵢ, yᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₅2(xᵢ, yᵢ)
+	logℒᵢ´ = logpdfₑₓ₀₄a(xᵢ´, yᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₅2[i, :] .= [xᵢ, yᵢ]
+end
+
+histogram2d(samplesₑₓ₀₅2[:, 1], samplesₑₓ₀₅2[:, 2], normalize=:pdf, color=:plasma, title="variance = 100×I₂")
+```
+
+extreme values of the proposal variance don’t find representative samples of the distribution
+
+- small variance = small step sizes: walkers don’t go very far at every step → high autocorrelation
+- large variance = large step sizes: leads to many rejected candidates, lowering the number of unique samples we get
+
+## exercise 06
+
+::: {.callout-note}
+
+Why, in all the previous problems, did we give the proposal distributions $q(x^{\prime}| x)$ a mean of $x$? What would be bad if we hadn’t done that?
+
+Re-do exercise 04.a. with a proposal $q(x^{\prime}| x)$ with a stupidly shifted mean of $x + 2$ and see what happens.
+
+Bonus points: Modify the acceptance-rejection criterion to deal with the messed-up $q(x^{\prime}| x)$ and show that everything works once again.
+
+:::
+
+```{julia}
+rngₑₓ₀₆(𝕩, 𝕪) =  𝕩+2 + randn(),  𝕪 + randn();
+
+samplesₑₓ₀₆ = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+logℒᵢ = logpdfₑₓ₀₄a(xᵢ, yᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₆(xᵢ, yᵢ)
+	logℒᵢ´ = logpdfₑₓ₀₄a(xᵢ´, yᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₆[i, :] .= [xᵢ, yᵢ]
+end
+
+histogram2d(samplesₑₓ₀₆[:, 1], samplesₑₓ₀₆[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+```
+
+A proposal distribution with nonzero mean would bias walkers to move in one direction and not explore the space fairly
+
+# Likelihoods and priors
+
+## quick summary {.unnumbered}
+
+MCMC samples a posterior (probability for parameters given data), and cannot sample a likelihood (probability for data given parameters)
+
+it is a good idea to have proper priors (*e.g.* flat but with bounds). It isn’t a requirement that priors be proper for the posterior to be proper
+
+## exercise 07
+
+::: {.callout-note}
+
+Run your M-H MCMC sampler from exercise 02, but now with a density function that is precisely unity *everywhere* (that is, at any input value of $x$ it returns unity). That is, an improper function (as discussed in this section). Run it for longer and longer and plot the chain value $x$ as a function of timestep. What happens?
+
+:::
+
+improper function: returns $1.0$ at any input value of $x$, *i.e.* always accept new sample regardless
+
+```{julia}
+samplesₑₓ₀₇ = zeros(N_samples);
+xᵢ = 0.; # start
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ = rngₑₓ₀₂(xᵢ) # always accept new sample regardless
+	samplesₑₓ₀₇[i] = xᵢ
+end
+
+plot(samplesₑₓ₀₇, label=nothing, xlabel="step")
+```
+
+a true random walk, in other words Markov chain without Monte Carlo
+
+## exercise 08
+
+::: {.callout-note}
+
+For a real-world inference problem, read enough of “Data analysis recipes: Fitting a model to data” to understand and execute exercise 06 in that document.
+
+:::
+
+mixture model:
+
+- outliers come from a distribution with probability $P_{\mathrm{bad}}$, example of distribution: $\mathcal{N}\left(Y_{\mathrm{bad}},V_{\mathrm{bad}}\right)$
+- inliers come from straight line with probability $1-P_{\mathrm{bad}}$, therefore distribution: $\mathcal{N}\left(mx_i+b,\sigma_{y_i}^2\right)$
+
+likelihood:
+$$
+\mathcal{L} \propto \prod_{i=1}^N\left[
+\frac{1-P_{\mathrm{bad}}}{\sqrt{2\pi\sigma_{y_i}^2}} \exp\left(-\frac{[y_i-mx_i-b]^2}{2\sigma_{y_i}^2}\right) +
+\frac{P_{\mathrm{bad}}}{\sqrt{2\pi[V_{\mathrm{bad}}+\sigma_{y_i}^2]}} \exp\left(-\frac{[y_i-Y_{\mathrm{bad}}]^2}{2[V_{\mathrm{bad}}+\sigma_{y_i}^2]}\right)
+\right]
+$$
+
+```{julia}
+Nₑₓ₀₈ = 20;
+xₑₓ₀₈   = [201., 244.,  47., 287., 203.,  58., 210., 202., 198., 158., 165., 201., 157., 131., 166., 160., 186., 125., 218., 146.];
+yₑₓ₀₈   = [592., 401., 583., 402., 495., 173., 479., 504., 510., 416., 393., 442., 317., 311., 400., 337., 423., 334., 533., 344.];
+σ_yₑₓ₀₈ = [ 61.,  25.,  38.,  15.,  21.,  15.,  27.,  14.,  30.,  16.,  14.,  25.,  52.,  16.,  34.,  31.,  42.,  26.,  16.,  22.];
+
+function manual_logaddexp(a, b)
+	c = max(a, b) # prevent underflow and overflow in the exponentiation
+	# see: https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html
+	return c + log(exp(a-c) + exp(b-c))
+end
+function loglikelihoodₑₓ₀₈(b, m, P_bad, Y_bad, V_bad)
+	res = zeros(Nₑₓ₀₈)
+	Threads.@threads for i ∈ 1:Nₑₓ₀₈
+		ŷᵢ = b + m * xₑₓ₀₈[i]
+		σ²_badᵢ = σ_yₑₓ₀₈[i]^2 + V_bad
+		 inlier = log1p(-P_bad) + logpdfₑₓ₀₂(yₑₓ₀₈[i], ŷᵢ, σ_yₑₓ₀₈[i]^2)
+		outlier = log(   P_bad) + logpdfₑₓ₀₂(yₑₓ₀₈[i], Y_bad, σ²_badᵢ)
+		res[i] = manual_logaddexp(inlier, outlier)
+	end
+	return sum(res)
+end
+
+samplesₑₓ₀₈ = Dict(
+	"b" => zeros(N_samples),
+	"m" => zeros(N_samples),
+	"P_bad" => zeros(N_samples),
+	"Y_bad" => zeros(N_samples),
+	"V_bad" => zeros(N_samples),
+);
+
+bᵢ, mᵢ, P_badᵢ, Y_badᵢ, V_badᵢ = 0., 0., .5, mean(yₑₓ₀₈), 1.; # start
+logℒᵢ = loglikelihoodₑₓ₀₈(mᵢ, bᵢ, P_badᵢ, Y_badᵢ, V_badᵢ); # pre-compute log-likelihood
+
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	bᵢ´, mᵢ´, P_badᵢ´, Y_badᵢ´, V_badᵢ´ = rngₑₓ₀₂(bᵢ), rngₑₓ₀₂(mᵢ), rand(), rngₑₓ₀₂(Y_badᵢ), abs(rngₑₓ₀₂(V_badᵢ))
+	logℒᵢ´ = loglikelihoodₑₓ₀₈(bᵢ´, mᵢ´, P_badᵢ´, Y_badᵢ´, V_badᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		bᵢ, mᵢ, P_badᵢ, Y_badᵢ, V_badᵢ = bᵢ´, mᵢ´, P_badᵢ´, Y_badᵢ´, V_badᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₀₈["b"][i] = bᵢ
+	samplesₑₓ₀₈["m"][i] = mᵢ
+	samplesₑₓ₀₈["P_bad"][i] = P_badᵢ
+	samplesₑₓ₀₈["Y_bad"][i] = Y_badᵢ
+	samplesₑₓ₀₈["V_bad"][i] = V_badᵢ
+end
+```
+
+```{julia}
+pₑₓ₀₈ = plot(layout=(3, 2))
+
+histogram!(pₑₓ₀₈, samplesₑₓ₀₈["b"], subplot=1, normed=true, bins=N_bins, fill=false, label=nothing, title="b")
+histogram!(pₑₓ₀₈, samplesₑₓ₀₈["m"], subplot=3, normed=true, bins=N_bins, fill=false, label=nothing, title="m")
+histogram2d!(pₑₓ₀₈, samplesₑₓ₀₈["b"], samplesₑₓ₀₈["m"], subplot=5, bins=N_bins, normalize=:pdf, color=:plasma, xlabel="b", ylabel="m")
+
+histogram!(pₑₓ₀₈, samplesₑₓ₀₈["P_bad"], subplot=2, normed=true, bins=N_bins, fill=false, label=nothing, title="P_bad")
+histogram!(pₑₓ₀₈, samplesₑₓ₀₈["Y_bad"], subplot=4, normed=true, bins=N_bins, fill=false, label=nothing, title="Y_bad")
+histogram!(pₑₓ₀₈, samplesₑₓ₀₈["V_bad"], subplot=6, normed=true, bins=N_bins, fill=false, label=nothing, title="V_bad")
+```
+
+```{julia}
+bₑₓ₀₈ = mean(samplesₑₓ₀₈["b"]);
+mₑₓ₀₈ = mean(samplesₑₓ₀₈["m"]);
+scatter(xₑₓ₀₈, yₑₓ₀₈, yerror=σ_yₑₓ₀₈, label=nothing)
+plot!(𝕩 -> mₑₓ₀₈*𝕩 + bₑₓ₀₈, label=nothing)
+```
+
+see <https://github.com/phineas-pta/hogg2010> for solution to that exercise using `Turing` package
+
+## exercise 09
+
+::: {.callout-note}
+
+Modify the sampler you wrote in exercise 02 to take steps not in $x$ but in $\ln x$. That is, replace the Gaussian proposal distribution $q(x^{\prime}| x)$ with a Gaussian distribution in $\ln x$, *i.e.* $q(\ln x^{\prime}| \ln x)$, but make no other changes. By doing this, you are no longer sampling the Gaussian $p(x)$ that you were in exercise 02. What about your answers change? What distribution are you sampling now? Compute the analytic function that you have sampled from - this will no longer be the same $p(x)$ - and over-plot it on your histogram.
+
+:::
+
+```{julia}
+rngₑₓ₀₉(𝕩) = 𝕩*exp(randn()); # exp(log(𝕩) + randn())
+
+samplesₑₓ₀₉ = zeros(N_samples);
+xᵢ = 1e-3; # start at 0. will collapse everything
+logℒᵢ = logpdfₑₓ₀₂(log(xᵢ)); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	if xᵢ´ > 0
+		logℒᵢ´ = logpdfₑₓ₀₂(log(xᵢ´))
+		if logℒᵢ´ - logℒᵢ > log(rand())
+			xᵢ = xᵢ´
+			logℒᵢ = logℒᵢ´
+		end
+	end
+	samplesₑₓ₀₉[i] = xᵢ
+end
+
+# ATTENTION: μ & σ of log-normal aren’t the same as normal distribution
+log_samplesₑₓ₀₉ = log.(samplesₑₓ₀₉);
+μ̂ₑₓ₀₉ = mean(log_samplesₑₓ₀₉);
+σ̂²ₑₓ₀₉ = var(log_samplesₑₓ₀₉; corrected=false);
+
+#=
+# somehow below formula isn’t correct, that’s why i used the estimators above
+μₑₓ₀₉ = log(4/sqrt(4+2)); # log(μₓ^2/sqrt(μₓ^2 + σₓ^2))
+σ²ₑₓ₀₉ = log1p(2/2^2); # log1p((σₓ/μₓ)^2)
+=#
+
+histogram(samplesₑₓ₀₉, normed=true, bins=N_bins, label="drawn samples", fill=false)
+plot!(𝕩 -> exp(-(log(𝕩)-μ̂ₑₓ₀₉)^2/(2*σ̂²ₑₓ₀₉))/(𝕩*sqrt(2π*σ̂²ₑₓ₀₉)), label="log-normal PDF")
+```
+
+the histogram sometimes seems off from the analytical solution, maybe i made a mistake
+
+# Autocorrelation & convergence
+
+## quick summary {.unnumbered}
+
+MCMC produces correlated samples due to its Markovian nature. Key properties include:
+
+- Burn-in: Discarding initial samples to mitigate initialization bias.
+- Autocorrelation Time: Measures sample independence; longer times require more samples.
+- Convergence Diagnostics: Tools like the Gelman-Rubin statistic compare multiple chains to assess convergence.
+
+## exercise 10
+
+::: {.callout-note}
+
+Re-do exercise 02 but now look at convergence: Plot the $x$ chain as a function of timestep. Also split the chain into 4 contiguous segments (the 1st, 2nd, 3rd, and 4th quarters of the chain). In each of these 4, compute the empirical mean and empirical variance of $x$. What do you conclude about convergence from these heuristics?
+
+:::
+
+```{julia}
+plot(samplesₑₓ₀₂, label=nothing)
+```
+
+```{julia}
+# copied from https://discourse.julialang.org/t/split-vector-into-n-potentially-unequal-length-subvectors/73548/4
+samplesₑₓ₀₂_4chunks = let
+	c = N_samples ÷ 4
+	[samplesₑₓ₀₂[1+c*k:(k == 3 ? end : c*k+c)] for k ∈ 0:3]
+end;
+
+plot(samplesₑₓ₀₂_4chunks, label=["1" "2" "3" "4"])
+```
+
+```{julia}
+mean.(samplesₑₓ₀₂_4chunks)
+```
+
+```{julia}
+var.(samplesₑₓ₀₂_4chunks)
+```
+
+## exercise 11
+
+::: {.callout-note}
+
+Write a piece of code that computes the empirical autocorrelation function. You will probably want to speed this computation up by using a fast Fourier transform (The calculation of the autocorrelation function can be seen as a convolution and it can, therefore, be computed using the fast Fourier transform in $\mathcal{O}(N\,\log N)$ operations instead of $\mathcal{O}(N^2)$ for a naive implementation.). Run this on the chain you obtained from exercise 02. Plot the autocorrelation function you find at short lags ($\Delta < 100$).
+
+:::
+
+naive implementation: $\mathcal{O}(n^2)$: copied from <https://github.com/JuliaStats/StatsBase.jl/blob/master/src/signalcorr.jl>
+
+```{julia}
+#| eval: false
+#| code-fold: true
+#| code-summary: "hidden unrecommended code"
+
+# DRAFT (SHOULDN’T USE): naive implementation: 𝒪(n²)
+function autocorr_naive(𝕩)
+	z̄ = 𝕩 .- mean(𝕩)
+	res = map(1:length(𝕩)) do lag
+		dot(z̄[begin:(end-lag)], z̄[(1+lag):end])
+	end
+	return res ./ dot(z̄, z̄)
+end
+```
+
+the author talked about fast fourrier transform that can be $\mathcal{O}(n\log n)$ instead, so must use `FFTW` package and do zero-padding, see <https://dsp.stackexchange.com/a/54934/69029>
+
+```{julia}
+# recommendation: use fft: 𝒪(n log n)
+function autocorr(𝕩)
+	n = length(𝕩)
+	𝕩̄ = vcat(𝕩 .- mean(𝕩), zeros(n))
+	A = fft(𝕩̄)
+	S = abs2.(A) # A .* conj(A)
+	res = real(ifft(S))[begin:n]
+	return res ./ res[begin]
+end
+```
+
+```{julia}
+acfₑₓ₁₁ = autocorr(samplesₑₓ₀₂);
+plot(acfₑₓ₁₁[1:50], label=nothing, xlabel="Δ", ylabel="Cₓ(Δ)")
+```
+
+## exercise 12
+
+::: {.callout-note}
+
+Write a piece of code that estimates the integrated autocorrelation time for a chain of samples using an estimate of the autocorrelation function and a given window size $M$. Plot the estimated $\tau$ as a function of $M$ for several contiguous segments of the chain and overplot the sample function based on the full chain. What can you conclude from this plot?
+
+Implement an iterative procedure for automatically choosing $M$. (The recipe given on page 16 of Sokal 1997 *Monte Carlo methods in statistical mechanics: foundations and new algorithms.* might be helpful. Note that the definition of $\tau$ that we adopt is twice the value used by Sokal.) Overplot this estimate on the plot of $\tau(M)$
+
+:::
+
+i read Sokal 1997 but admittedly i don’t understand anything, so instead i transpile the authors’ code
+
+```{julia}
+function autocorr_time_simple(acf, window)
+	return 1 + 2 * sum(acf[2:window])
+end
+
+function autocorr_time_iterative(acf, c=10, low=10)
+	high = length(acf) ÷ c
+	for M ∈ low:high
+		τ = autocorr_time_simple(acf, M)
+		if τ > 1 && M > c*τ
+			return τ
+		end
+	end
+	error("chain too short to estimate τ reliably")
+end
+```
+
+```{julia}
+Nₑₓ₁₂ = 2 .^ (2:floor(Int, log2(N_samples÷2)));
+chainsₑₓ₁₂ = let
+	N½ = N_samples ÷ 2
+	N¼ = N_samples ÷ 4
+	Dict(
+		"1st half" => samplesₑₓ₀₂[begin:N½],
+		"inter-quarters" => samplesₑₓ₀₂[N¼:(3*N¼)],
+		"2nd half" => samplesₑₓ₀₂[N½:end],
+		"full" => samplesₑₓ₀₂
+	)
+end;
+
+pₑₓ₁₂ = plot(xaxis=:log, xlabel="window size", ylabel="τₓ", legend=:bottomleft);
+Threads.@threads for (key, chain) ∈ collect(chainsₑₓ₁₂) # need collect for multi-thread
+	acf = autocorr(chain)
+	τs = [autocorr_time_simple(acf, n) for n ∈ Nₑₓ₁₂]
+	τ = round(autocorr_time_iterative(acf); digits=2)
+	plot!(pₑₓ₁₂, Nₑₓ₁₂, τs, label="$key (τₓ=$τ)")
+end
+τₓ = autocorr_time_iterative(acfₑₓ₁₁);
+hline!(pₑₓ₁₂, [τₓ], label="τₓ of full chain")
+pₑₓ₁₂
+```
+
+# Tuning
+
+## quick summary {.unnumbered}
+
+Effective MCMC requires tuning the proposal distribution (*e.g.*, Gaussian with adjustable covariance). Optimal acceptance rates (Goldilocks ratio) =25–50% balance exploration and efficiency. Adaptive methods adjust proposal scales during burn-in to achieve target acceptance rates.
+
+## exercise 13
+
+::: {.callout-note}
+
+Run the MCMC sampling of exercise 04 with the covariant Gaussian density. Give the proposal density $q(x^{\prime}| x)$ a diagonal variance tensor that is $Q$ times the 2-dimensional identity matrix. Assess the acceptance fraction as a function of $Q$. Find (very roughly) the value of $Q$ that gives an acceptance fraction of about 25%. Don’t try to optimize precisely; just evaluate the acceptance fraction on a logarithmic grid of $Q$ with values of $Q$ separated by factors of 2.
+
+:::
+
+```{julia}
+Qₑₓ₁₃ = 2. .^ (-2:5);
+rngₑₓ₁₃(𝕩, 𝕪, ℚ) = 𝕩 + ℚ*randn(), 𝕪 + ℚ*randn();
+
+accept_ratioₑₓ₁₃ = zeros(length(Qₑₓ₁₃));
+
+Threads.@threads for idx ∈ eachindex(Qₑₓ₁₃)
+	accept_count = 0
+	xᵢ, yᵢ = 0., 0.
+	logℒᵢ = logpdfₑₓ₀₄a(xᵢ, yᵢ)
+	for i ∈ 1:N_samples
+		xᵢ´, yᵢ´ = rngₑₓ₁₃(xᵢ, yᵢ, Qₑₓ₁₃[idx])
+		logℒᵢ´ = logpdfₑₓ₀₄a(xᵢ´, yᵢ´)
+		if logℒᵢ´ - logℒᵢ > log(rand())
+			xᵢ, yᵢ = xᵢ´, yᵢ´
+			logℒᵢ = logℒᵢ´
+			accept_count += 1
+		end
+	end
+	accept_ratioₑₓ₁₃[idx] = accept_count / N_samples
+end
+
+plot(Qₑₓ₁₃, accept_ratioₑₓ₁₃, xaxis=:log, xlabel="Q", ylabel="acceptance ratio", label=nothing)
+hline!([.25], label="25% accept")
+```
+
+value $Q$ would be between: `{julia} Qₑₓ₁₃[findlast(𝕩 -> 𝕩 > .25, accept_ratioₑₓ₁₃)]` and `{julia} Qₑₓ₁₃[findfirst(𝕩 -> 𝕩 < .25, accept_ratioₑₓ₁₃)]`
+
+## exercise 14
+
+::: {.callout-note}
+
+Re-do exercise 13 but instead of trying to reach a certain acceptance fraction, try to minimize the autocorrelation time. You will need one of the autocorrelation-time estimators you might have built in a previous exercise. (This, by the way, is the *Right Thing To Do*, but often expensive.) What do you get as the best value of $Q$ in this case? Again, just evaluate on a coarse logarithmic grid.
+
+:::
+
+```{julia}
+τsₑₓ₁₄ = zeros(length(Qₑₓ₁₃), 2); # x & y
+
+Threads.@threads for idx ∈ eachindex(Qₑₓ₁₃)
+	samples = zeros(N_samples, 2)
+	xᵢ, yᵢ = 0., 0.
+	logℒᵢ = logpdfₑₓ₀₄a(xᵢ, yᵢ)
+	for i ∈ 1:N_samples
+		xᵢ´, yᵢ´ = rngₑₓ₁₃(xᵢ, yᵢ, Qₑₓ₁₃[idx])
+		logℒᵢ´ = logpdfₑₓ₀₄a(xᵢ´, yᵢ´)
+		if logℒᵢ´ - logℒᵢ > log(rand())
+			xᵢ, yᵢ = xᵢ´, yᵢ´
+			logℒᵢ = logℒᵢ´
+		end
+		samples[i, :] .= [xᵢ, yᵢ]
+	end
+
+	acf_x, acf_y = autocorr(samples[:, 1]), autocorr(samples[:, 2])
+	τsₑₓ₁₄[idx, 1] = autocorr_time_iterative(acf_x)
+	τsₑₓ₁₄[idx, 2] = autocorr_time_iterative(acf_y)
+end
+
+plot(Qₑₓ₁₃, τsₑₓ₁₄[:, 1], xaxis=:log, xlabel="Q", ylabel="τₓ", label="x")
+plot!(Qₑₓ₁₃, τsₑₓ₁₄[:, 2], label="y")
+```
+
+the graph is weird, maybe i made errors somewhere
+
+## exercise 15
+
+::: {.callout-note}
+
+In exercise 13 you varied only the parameter $Q$, but really there are 3 free parameters (2 variances and a covariance). If the problem was $D$-dimensional, how many tuning parameters would there be, in principle?
+
+:::
+
+i’m not sure, maybe $\frac{D(D+1)}{2}$ tuning parameters?
+
+## exercise 16
+
+::: {.callout-note}
+
+The Rosenbrock density used as a demonstration case for many samplers (see, for example, Goodman & Weare 2010 *Ensemble samplers with affine invariance*). Test your sampler on this density: $f(\theta_1,\,\theta_2) = \exp\left(-\frac{100\,(\theta_2-{\theta_1}^2)^2+(1-\theta_1)^2}{20}\right)$. Tune the Gaussian proposal distribution in your MH MCMC sampler to sample this density efficiently. What autocorrelation time do you get? Compare to what `emcee` gets (<https://dfm.io/emcee>)
+
+:::
+
+```{julia}
+logpdfₑₓ₁₅(𝕩, 𝕪) = -(100*(𝕪-𝕩^2)^2 + (1-𝕩)^2) / 20;
+
+samplesₑₓ₁₅ = zeros(N_samples, 2);
+xᵢ, yᵢ = 0., 0.; # start
+logℒᵢ = logpdfₑₓ₁₅(xᵢ, yᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´, yᵢ´ = rngₑₓ₀₄(xᵢ, yᵢ)
+	logℒᵢ´ = logpdfₑₓ₁₅(xᵢ´, yᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ, yᵢ = xᵢ´, yᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₁₅[i, :] .= [xᵢ, yᵢ]
+end
+```
+
+```{julia}
+histogram2d(samplesₑₓ₁₅[:, 1], samplesₑₓ₁₅[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+```
+
+```{julia}
+pₑₓ₁₅ = plot(layout=2)
+histogram!(pₑₓ₁₅, samplesₑₓ₁₅[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+histogram!(pₑₓ₁₅, samplesₑₓ₁₅[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+```
+
+```{julia}
+acfₑₓ₁₅x, acfₑₓ₁₅y = autocorr(samplesₑₓ₁₅[:, 1]), autocorr(samplesₑₓ₁₅[:, 2]);
+plot(acfₑₓ₁₅x, label="x", xaxis=:log, xlabel="lag", ylabel="autocorrelation")
+plot!(acfₑₓ₁₅y, label="y")
+```
+
+# Initialization and burn-in
+
+## quick summary {.unnumbered}
+
+Initialize samplers near plausible regions (*e.g.*, from optimization). Burn-in removes early samples to ensure the chain has reached the stationary distribution. Multi-modal posteriors require multiple chains to avoid initialization-dependent results.
+
+## exercise 17
+
+::: {.callout-note}
+
+Re-do exercise 02 but with different starting positions. What happens as you make the starting position extremely far from the origin? What is the scaling: As you move the initialization further away, how much longer does it take for the sampler to reach reasonable density?
+
+:::
+
+```{julia}
+samplesₑₓ₁₇ = zeros(N_samples);
+xᵢ = 1000; # start
+logℒᵢ = logpdfₑₓ₀₂(xᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	xᵢ´ = rngₑₓ₀₂(xᵢ)
+	logℒᵢ´ = logpdfₑₓ₀₂(xᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		xᵢ = xᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₁₇[i] = xᵢ
+end
+
+plot(samplesₑₓ₁₇[begin:(N_samples ÷ 20)], label=nothing, xlabel="step")
+```
+
+take a few thousands burn-in steps
+
+## exercise 18
+
+::: {.callout-note}
+
+Check the scaling you found in exercise 17 with a higher-dimensional Gaussian (try, for example, a 10-d Gaussian). The same or worse?
+
+:::
+
+```{julia}
+rngₑₓ₁₈(𝕩⃗) = [𝕩 + randn() for 𝕩 ∈ 𝕩⃗];
+
+logpdfₑₓ₁₈(𝕩⃗, μ=2., σ²=2.) = sum(𝕩 -> logpdfₑₓ₀₂(𝕩, μ, σ²), 𝕩⃗); # assume independance of all gaussian (i.e. no covariance)
+
+Nₑₓ₁₈ = 10;
+samplesₑₓ₁₈ = zeros(N_samples, Nₑₓ₁₈);
+x⃗ᵢ = fill(1000, Nₑₓ₁₈); # start
+logℒᵢ = logpdfₑₓ₁₈(x⃗ᵢ); # pre-compute log-likelihood
+for i ∈ 1:N_samples # do not use multi-thread loop because of data races
+	x⃗ᵢ´ = rngₑₓ₁₈(x⃗ᵢ)
+	logℒᵢ´ = logpdfₑₓ₁₈(x⃗ᵢ´)
+	if logℒᵢ´ - logℒᵢ > log(rand())
+		x⃗ᵢ = x⃗ᵢ´
+		logℒᵢ = logℒᵢ´
+	end
+	samplesₑₓ₁₈[i, :] .= x⃗ᵢ
+end
+
+plot(samplesₑₓ₁₈[begin:(N_samples ÷ 10), 1], label="x₁", xlabel="step")
+```
+
+take much longer burn-in
+
+## exercise 19
+
+::: {.callout-note}
+
+Import (or write) an optimizer, and upgrade the code you wrote for exercise 17 to begin by optimizing $\ln p(x)$ and only then start the MCMC sampler from that optimum. Use a sensible optimizer. Compare the scaling you found in exercise 17 to the same scaling for the optimizer. To make this test fair, don’t use the awesome math you know about Gaussians to help you here; pretend that $p(x)$ is an unknown function with unknown derivatives.
+
+:::
+
+```{julia}
+logpdfₑₓ₁₉(𝕩) = (𝕩-2)^2 / (2*2) + log(2π*2) / 2 # inverse sign to do optimization (i.e. minimization)
+xₑₓ₁₉ = minimum(optimize(logpdfₑₓ₁₉, -10, 10))
+```
+
+optimum of normal logpdf = can use Newton-Raphson method to find root of its derivative<br />
+but since it’s a quadratic function, analytical solution is trivial
+
+# Results, error bars, and figures
+
+## quick summary {.unnumbered}
+
+Recommendations for reporting:
+
+- Plots: Trace plots (to assess mixing), histograms, and corner plots (showing covariances).
+- Statistics: Use medians and quantiles for credible intervals instead of the best sample.
+- Sample Sharing: Publish posterior samples with prior evaluations for reproducibility.
+
+## exercise 20
+
+::: {.callout-note}
+
+Execute exercise 16, or —if you are lazy— just install and use `emcee` to do the hard work. Now plot the $x$ and $y$ histograms of a 10,000-point sampling of this distribution (you might have to sample more than 10,000 and thin the chain), and also plot the 2-dimensional scatter plot of $x,y$ samples.
+
+Overplot on all 3 plots an indicator of the means and medians of the samples along the $x$ and $y$ directions. Overplot on all 3 plots the (above) recommended quantiles of the samples. Comment on the results.
+
+:::
+
+the authors usually recommend as a default behavior —in the one-dimensional case— to choose the median of sampling as the measurement value, the 16% quantile as the lower 1σ error bar, and the 84% quantile as the upper 1σ error bar. This has pathologies in higher dimensions, but it is pretty safe for one-dimensional answers.
+
+```{julia}
+mean_x, mean_y = mean(samplesₑₓ₁₅; dims=1);
+median_x, median_y = median(samplesₑₓ₁₅; dims=1);
+q16_x, q84_x = quantile(samplesₑₓ₁₅[:, 1], [.16, .84]);
+q16_y, q84_y = quantile(samplesₑₓ₁₅[:, 2], [.16, .84]);
+```
+
+```{julia}
+histogram2d(samplesₑₓ₁₅[:, 1], samplesₑₓ₁₅[:, 2], bins=N_bins, normalize=:pdf, color=:plasma)
+vline!([mean_x median_x q16_x q84_x], label=["mean x" "median x" "16% x" "84% x"])
+hline!([mean_y median_y q16_y q84_y], label=["mean y" "median y" "16% y" "84% y"])
+```
+
+```{julia}
+pₑₓ₂₀ = plot(layout=2)
+histogram!(pₑₓ₂₀, samplesₑₓ₁₅[:, 1], subplot=1, normed=true, bins=N_bins, label=nothing, fill=false, title="x")
+vline!(pₑₓ₂₀, [mean_x median_x q16_x q84_x], subplot=1, label=["mean" "median" "16%" "84%"])
+histogram!(pₑₓ₂₀, samplesₑₓ₁₅[:, 2], subplot=2, normed=true, bins=N_bins, label=nothing, fill=false, title="y")
+vline!(pₑₓ₂₀, [mean_y median_y q16_y q84_y], subplot=2, label=["mean" "median" "16%" "84%"])
+```
+
+# Troubleshooting and advice
+
+*no exercise in this section*
+
+quick summary: Common issues and solutions:
+
+- Functional Tests: Validate MCMC by sampling known distributions (*e.g.*, Gaussians) or priors.
+- Likelihood Issues: Ensure reproducibility of likelihood evaluations (*e.g.*, deterministic integrals).
+- Parameterization: Avoid multimodalities from poor parameter choices (*e.g.*, reparameterize angles to Cartesian coordinates).
+- Convergence Checks: Monitor acceptance rates, autocorrelation, and initialization dependencies.
+
+# More sophisticated sampling methods
+
+*no exercise in this section*
+
+quick summary:
+
+- Ensemble Samplers (*e.g.*, `emcee`): Use multiple walkers to adaptively tune proposals, ideal for low-dimensional problems.
+- Gibbs Sampling: Efficient for models with conditionally independent parameters (*e.g.*, hierarchical models).
+- Hamiltonian Monte Carlo (HMC): Uses gradient information for high-dimensional efficiency.
+- Nested Sampling: Explores multimodal distributions and computes Bayesian evidence.
+- Importance Sampling: Re-weights samples from a simpler distribution to approximate the target.
